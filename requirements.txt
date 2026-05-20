@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+langchain
+langgraph
+langchain-google-vertexai
+google-cloud-firestore
