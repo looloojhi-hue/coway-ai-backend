@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coway AI Smart Search Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght=300;400;500;700&display=swap');
+    body { font-family: 'Noto Sans KR', sans-serif; }
+    .glass-effect { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
+    .fade-in { animation: fadeIn 0.5s ease-out forwards; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    
+    /* 인용구 출처 연결 배지 스타일 */
+    .citation-chip { 
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 18px; height: 18px; font-size: 10px; font-weight: bold;
+      background-color: #3b82f6; color: white; border-radius: 4px;
+      margin-left: 4px; margin-right: 2px; vertical-align: middle; cursor: pointer;
+      padding: 0 4px;
+    }
+    /* 출처 카드 포커스 하이라이트 */
+    .highlight-card { border: 2px solid #3b82f6 !important; background-color: #eff6ff !important; transition: all 0.3s ease; }
+    /* 규정 내 수치 하이라이트 */
+    .highlight-text { color: #2563eb; font-weight: 700; background: #eff6ff; padding: 0 2px; border-radius: 2px; }
+    
+    /* 마크다운 변환 본문 가독성 전사 표준 스타일 지정 */
+    .summary-content { font-size: 15px; color: #334155; line-height: 1.7; }
+    .summary-content h1, .summary-content h2, .summary-content h3 { 
+      font-weight: 700; color: #1e3a8a; 
+      display: block; margin-top: 20px; margin-bottom: 8px;
+    }
+    .summary-content strong { font-weight: 700; color: #1e3a8a; }
+    .summary-content ul { list-style-type: disc; padding-left: 20px; margin-bottom: 12px; }
+    .summary-content ol { list-style-type: decimal; padding-left: 20px; margin-bottom: 12px; }
+    .summary-content li { margin-bottom: 6px; padding-left: 4px; }
+    .summary-content p { margin-bottom: 12px; }
+
+    /* 📊 [수석 비서 고밀도 대형 도표 인텔리전트 자율 가드 디자인 패치] */
+    .summary-content table {
+      display: table;
+      width: 100%;
+      table-layout: auto; /* 브라우저가 셀 텍스트 밀도를 파악하여 컬럼 폭 자율 안착 */
+      margin: 18px 0;
+      font-size: 13px; /* 대형 예산/지표 데이터에 특화된 가독성 폰트 스케일 */
+      background-color: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05);
+      word-break: keep-all; /* 단어 쪼개짐 방지 방화벽 */
+    }
+    .summary-content th {
+      background-color: #f8fafc;
+      color: #1e3a8a;
+      font-weight: 600;
+      border: 1px solid #e2e8f0;
+      padding: 10px 12px;
+      text-align: center;
+    }
+    .summary-content td {
+      border: 1px solid #e2e8f0;
+      padding: 10px 12px;
+      color: #334155;
+      text-align: center;
+      vertical-align: middle;
+      font-size: 12.5px; /* 데이터 밀도 과밀 시 자율 압축용 서브 스케일 */
+      white-space: normal; /* 가로 찢어짐을 원천 차단하고 자연스러운 셀 내부 멀티 라인 허용 */
+      line-height: 1.5;
+    }
+    .summary-content tr:nth-child(even) { background-color: rgba(59, 130, 246, 0.03); }
+    .summary-content tr:hover { background-color: #f1f5f9; transition: background-color 0.2s ease; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+
+  <div id="app" class="flex flex-col min-h-screen">
+    
+    <header class="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-6">
+      <div class="flex items-center gap-3 cursor-pointer" onclick="resetUI()">
+        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">C</div>
+        <span class="font-bold text-lg tracking-tight text-slate-800">Coway AI Chatbot</span> 
+      </div>
+      <div class="flex items-center gap-4">
+        <button onclick="startBrandNewChat()" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-all shadow-sm">
+          <i data-lucide="plus-circle" class="w-4 h-4 text-blue-500"></i> 새 대화 시작
+        </button>
+        <div id="user-profile" class="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl">
+          <i data-lucide="user" class="w-4 h-4 text-slate-400"></i>
+          <span id="user-name">접속자: 확인 중...</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="flex-1 flex flex-col items-center overflow-x-hidden w-full">
+      
+      <div id="dashboard-view" class="w-full max-w-6xl px-6 py-10 md:py-16 transition-all duration-500">
+        <div class="mb-8 text-center md:text-left">
+          <h1 class="text-3xl md:text-4xl font-bold text-slate-900 mb-3 tracking-tight">
+            안녕하세요, <span id="greeting-name" class="text-blue-600">임직원</span>님!
+          </h1>
+          <p class="text-slate-500 text-lg">오늘 코웨이 업무 중 어떤 정보가 필요하신가요?</p>
+        </div>
+
+        <div class="flex flex-wrap gap-2 mb-3 items-center justify-center md:justify-start">
+          <span class="text-xs font-bold text-slate-400 uppercase tracking-wider mr-1">⚡ 스마트 헬퍼:</span>
+          <button onclick="fillCapabilityChip('오늘 안 읽은 메일 요약해줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
+            <i data-lucide="mail" class="w-3.5 h-3.5 text-blue-500"></i> 이메일 브리핑
+          </button>
+          <button onclick="fillCapabilityChip('오늘 오후 2시~3시 00 회의 잡아줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
+            <i data-lucide="calendar" class="w-3.5 h-3.5 text-emerald-500"></i> 캘린더 등록
+          </button>
+          <button onclick="fillCapabilityChip('오늘 오후까지 업무 기획안 작성 할 일 등록해줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
+            <i data-lucide="check-square" class="w-3.5 h-3.5 text-indigo-500"></i> 할 일(TASK) 등록
+          </button>
+          <button onclick="fillCapabilityChip('경조금 신청 자격 조건이 어떻게 돼?')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
+            <i data-lucide="book-open" class="w-3.5 h-3.5 text-orange-500"></i> 규정&매뉴얼 검색
+          </button>
+        </div>
+
+        <div class="relative group mb-10">
+          <div class="absolute inset-y-0 left-4 sm:left-5 flex items-center pointer-events-none">
+            <i data-lucide="search" class="w-5 h-5 sm:w-6 sm:h-6 text-slate-400 group-focus-within:text-blue-500 transition-colors"></i>
+          </div>
+          <input type="text" id="main-search-input" onkeydown="if(event.key==='Enter') handleSearch('main-search-input')" class="w-full bg-white border border-slate-200 rounded-2xl py-4 sm:py-5 pl-12 sm:pl-14 pr-16 sm:pr-36 text-base sm:text-lg shadow-xl shadow-slate-200/50 outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder:text-slate-300" placeholder="규정, 매뉴얼, 사내 가이드 검색...">
+          <button onclick="handleSearch('main-search-input')" class="absolute right-2 sm:right-3 inset-y-2 sm:inset-y-3 bg-blue-600 text-white px-4 sm:px-6 rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center gap-2">
+            <span class="hidden sm:inline">질문하기</span>
+            <i data-lucide="send" class="w-4 h-4 sm:w-5 sm:h-5"></i>
+          </button>
+        </div>
+
+        <div id="history-container" class="mb-10 hidden">
+          <div class="mb-4 flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+              <i data-lucide="clock" class="w-4 h-4 text-blue-500"></i> 최근 업무 히스토리 (최대 5개 복원)
+            </span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="history-card-grid"></div>
+        </div>
+
+        <div class="mb-4"><span class="text-xs font-bold text-slate-400 uppercase tracking-widest">💡 자주 묻는 질문 (Quick Search)</span></div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-10">
+          <div onclick="quickSearch('복리후생 제도 알려줘')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
+            <div class="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="heart" class="w-5 h-5"></i></div>
+            <h3 class="font-bold text-slate-800 text-sm">복리후생</h3>
+            <p class="text-[11px] text-slate-500 mt-1">포인트, 연차, 경조사</p>
+          </div>
+          <div onclick="quickSearch('IT 보안 가이드라인 요약해줘')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
+            <div class="w-10 h-10 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="shield-check" class="w-5 h-5"></i></div>
+            <h3 class="font-bold text-slate-800 text-sm">IT/보안</h3>
+            <p class="text-[11px] text-slate-500 mt-1">비밀번호, 보안 메일</p>
+          </div>
+          <div onclick="quickSearch('재무업무 매뉴얼')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
+            <div class="w-10 h-10 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="credit-card" class="w-5 h-5"></i></div>
+            <h3 class="font-bold text-slate-800 text-sm">재무업무 매뉴얼</h3>
+            <p class="text-[11px] text-slate-500 mt-1">비용전표, 법인카드</p>
+          </div>
+          <div onclick="quickSearch('출장 규정 및 매뉴얼')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
+            <div class="w-10 h-10 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="file-text" class="w-5 h-5"></i></div>
+            <h3 class="font-bold text-slate-800 text-sm">출장 매뉴얼</h3>
+            <p class="text-[11px] text-slate-500 mt-1">출장규정, 출장매뉴얼</p>
+          </div>
+        </div>
+
+        <div class="mb-4"><span class="text-xs font-bold text-slate-400 uppercase tracking-widest">🏢 부서별 전문 챗봇</span></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div onclick="showToast('💡 챗봇 연동 준비 중입니다')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-indigo-200 cursor-pointer transition-all flex items-center gap-4 group">
+            <div class="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors shrink-0"><i data-lucide="users" class="w-6 h-6"></i></div>
+            <div>
+              <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5">총무팀 출장 규정 전문 봇 <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity"></i></h4>
+              <p class="text-xs text-slate-400 mt-0.5">출장규정, 매뉴얼, 출장FAQ 전용 챗봇</p>
+            </div>
+          </div>
+          <div onclick="showToast('💡 챗봇 연동 준비중입니다')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-cyan-200 cursor-pointer transition-all flex items-center gap-4 group">
+            <div class="w-12 h-12 bg-cyan-50 text-cyan-600 rounded-xl flex items-center justify-center group-hover:bg-cyan-600 group-hover:text-white transition-colors shrink-0"><i data-lucide="monitor" class="w-6 h-6"></i></div>
+            <div>
+              <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5">안전보건 전문 봇 <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity"></i></h4>
+              <p class="text-xs text-slate-400 mt-0.5">산업재해, 안전보건(검진,화학물질) 전용 챗봇</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="chat-view" class="w-full max-w-6xl px-6 py-8 hidden flex flex-col gap-6">
+        <div id="message-container" class="flex flex-col gap-8 pb-32"></div>
+      </div>
+    </main>
+
+    <div id="sticky-input" class="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent z-40 hidden">
+      <div class="max-w-6xl mx-auto relative group">
+        <input type="text" id="chat-search-input" onkeydown="if(event.key==='Enter') handleSearch('chat-search-input')" class="w-full bg-white border border-slate-200 rounded-2xl py-4 pl-6 pr-24 shadow-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm" placeholder="추가로 궁금한 내용을 입력하세요...">
+        <button onclick="handleSearch('chat-search-input')" class="absolute right-2 inset-y-2 bg-blue-600 text-white px-4 rounded-xl hover:bg-blue-700 transition-all"><i data-lucide="send" class="w-4 h-4"></i></button>
+      </div>
+    </div>
+
+    <div id="loader" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] hidden flex flex-col items-center justify-start pt-20 px-4 sm:px-6">
+      <div class="bg-white/95 border-2 border-blue-500 p-5 rounded-2xl max-w-md w-full shadow-2xl flex items-center gap-4 animate-bounce mt-4">
+        <div class="w-9 h-9 border-4 border-slate-100 border-t-blue-600 rounded-full animate-spin shrink-0"></div>
+        <div class="flex flex-col flex-1">
+          <span class="text-sm font-bold text-blue-600 flex items-center gap-1">
+            <i data-lucide="sparkles" class="w-4 h-4 text-blue-500 animate-pulse"></i> AI가 업무를 수행중입니다!
+          </span>
+          <span class="text-[11px] text-slate-500 font-medium mt-0.5 leading-snug">
+            AI가 명령어를 분석하여 실행하고 있습니다. 잠시만 기다려주세요!
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button onclick="openGlobalFeedbackModal()" class="fixed bottom-24 right-6 sm:bottom-6 sm:right-6 bg-slate-800 text-white px-5 py-3.5 rounded-full shadow-2xl hover:bg-slate-700 transition-all z-50 flex items-center justify-center border-2 border-white/20"><i data-lucide="message-square-plus" class="w-5 h-5"></i><span class="font-medium ml-2.5 text-sm whitespace-nowrap">시스템 개선 제안</span></button>
+
+  <div id="toast" class="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-xl shadow-2xl transition-all duration-300 opacity-0 translate-y-4 pointer-events-none z-[300] flex items-center gap-3"><i data-lucide="info" class="w-4 h-4 text-blue-400"></i><span id="toast-message" class="text-sm font-medium">알림 메시지</span></div>
+  
+  <div id="feedback-modal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[200] hidden flex items-center justify-center fade-in">
+    <div class="bg-white rounded-2xl shadow-2xl w-[90%] max-w-md overflow-hidden flex flex-col">
+      <div class="flex justify-between items-center p-4 border-b border-slate-100 bg-slate-50">
+        <h3 class="font-bold text-slate-800 flex items-center gap-2"><i data-lucide="message-square-warning" class="w-4 h-4 text-slate-500"></i> 피드백 제공 (선택사항)</h3>
+        <button onclick="closeFeedbackModal()" class="text-slate-400 hover:text-slate-600 p-1"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <div class="p-5 flex flex-col gap-4 bg-white">
+        <p class="text-sm text-slate-600">이유를 선택해주세요!</p>
+        <div class="flex flex-wrap gap-2" id="feedback-reasons">
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">최신 정보가 아님(업데이트필요)</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">질문과 맞지 않은 답변</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">내용이 부족함</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">출처가 잘못됨</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">기타 의(아래 작성)</button>
+        </div>
+        <textarea id="feedback-comment" rows="3" class="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 placeholder:text-slate-300 resize-none" placeholder="추가 의견을 자세히 적어주시면 시스템 개선에 큰 도움이 됩니다."></textarea>
+      </div>
+      <div class="p-4 bg-slate-50 flex justify-end gap-2 border-t border-slate-100">
+        <button onclick="closeFeedbackModal()" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">취소</button>
+        <button onclick="submitNegativeFeedback()" class="px-4 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors">제출</button>
+      </div>
+    </div> 
+  </div>
+
+  <div id="global-feedback-modal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[250] hidden flex items-center justify-center fade-in">
+    <div class="bg-white rounded-2xl shadow-2xl w-[90%] max-w-lg overflow-hidden flex flex-col">
+      <div class="flex justify-between items-center p-4 border-b border-slate-100 bg-slate-50">
+        <h3 class="font-bold text-slate-800 flex items-center gap-2"><i data-lucide="lightbulb" class="w-5 h-5 text-blue-600"></i> 피드백 및 개선 제안</h3>
+        <button onclick="closeGlobalFeedbackModal()" class="text-slate-400 hover:text-slate-600 p-1"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <div class="p-6 flex flex-col gap-5 bg-white">
+        <div class="flex gap-4">
+          <div class="flex-1">
+            <label class="block text-xs font-bold text-slate-500 mb-1.5">유형</label>
+            <select id="global-feedback-type" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500 bg-slate-50">
+              <option value="버그/오류 리포트">버그/오류 리포트</option>
+              <option value="기능 추가 제안" selected>기능 추가 제안</option>
+              <option value="답변 품질 개선">답변 품질 개선</option>
+              <option value="기타 의견">기타 의견</option>
+            </select>
+          </div>
+          <div class="flex-1">
+            <label class="block text-xs font-bold text-slate-500 mb-1.5">우선순위</label>
+            <select id="global-feedback-priority" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500 bg-slate-50">
+              <option value="긴급">긴급</option>
+              <option value="높음">높음</option>
+              <option value="보통" selected>보통</option>
+              <option value="낮음">낮음</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 mb-1.5">제목</label>
+          <input type="text" id="global-feedback-title" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500" placeholder="제안하시려는 내용을 간단히 적어주세요.">
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 mb-1.5">상세 내용</label>
+          <textarea id="global-feedback-content" rows="4" class="w-full border border-slate-200 rounded-lg p-3 text-sm outline-none focus:border-blue-500 resize-none" placeholder="어떤 점이 불편하셨나요? 혹은 추가되었으면 하는 기능이나 답변 양식을 자세히 설명해주세요."></textarea>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-slate-500 mb-1.5">증빙 자료 첨부 (스크린샷, PDF 등)</label>
+          <input type="file" id="global-feedback-file" accept="image/*, .pdf" class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
+        </div>
+      </div> 
+      <div class="p-4 bg-slate-50 flex justify-end gap-2 border-t border-slate-100">
+        <button onclick="closeGlobalFeedbackModal()" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">취소</button>
+        <button id="global-feedback-submit-btn" onclick="submitGlobalFeedback()" class="px-5 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors flex items-center gap-2"><i data-lucide="send" class="w-4 h-4"></i> 제출하기</button>
+      </div>
+    </div> 
+  </div>
+
+  <script>
+    // ====================================================================
+    // [SECTION 4] 글로벌 상주형 데이터 장부 및 타이핑 애니메이션 자원 (JS States)
+    // ====================================================================
+    let globalLastUserQuery = "";
+    let globalLastAssistantAnswer = "";
+    let currentUserProfile = { name: "임직원", dept: "COWAY" };
+    let currentActiveSessionId = "default_session";
+    
+    const chatView = document.getElementById('chat-view');
+
+    const placeholderTemplates = [
+      "오늘 안 읽은 메일 요약해줘",
+      "오늘 오후 2시~3시 00 회의 잡아줘",
+      "오늘 오후까지 업무 기획안 작성 할 일 등록해줘",
+      "경조금 신청 자격 조건이랑 절차 알려줘",
+      "지타워 3층 대회의실 빔프로젝터 고장 났을 때 처리 방법"
+    ];
+    let currentPlaceholderIdx = 0;
+
+    lucide.createIcons();
+  </script>
+
+  <script>
+    // ====================================================================
+    // [SECTION 5] Pure REST API 초고속 웹 표준 통신 레이어 (Core Fetch Engines)
+    // ====================================================================
+    window.onload = async function() {
+      try {
+        const response = await fetch("/api/user-info");
+        if (response.ok) {
+          currentUserProfile = await response.json();
+          document.getElementById('greeting-name').innerText = currentUserProfile.name;
+          document.getElementById('user-name').innerText = `접속자: ${currentUserProfile.email}`;
+        }
+      } catch (err) {
+        console.error("사내 사용자 계정 동기화 유실:", err);
+        document.getElementById('user-name').innerText = "접속자: 미인증 계정";
+      }
+      
+      await renderHistoryDashboardGrid();
+      
+      rotatePlaceholder();
+      setInterval(rotatePlaceholder, 4500);
+      if (window.lucide) lucide.createIcons();
+    };
+
+    async function renderHistoryDashboardGrid() {
+      const gridContainer = document.getElementById('history-card-grid');
+      const historyWrapper = document.getElementById('history-container');
+      if (!gridContainer) return;
+
+      try {
+        const response = await fetch("/api/chat/history/list");
+        const data = await response.json();
+
+        if (data.success && data.sessions && data.sessions.length > 0) {
+          historyWrapper.classList.remove('hidden');
+          gridContainer.innerHTML = ''; 
+
+          data.sessions.slice(0, 5).forEach(session => {
+            let badgeText = '💬 일반업무';
+            let badgeClass = 'bg-slate-50 text-slate-600 border border-slate-200';
+            
+            if (session.badge_type === 'COST' || session.badge_type === 'BQ') {
+              badgeText = '📈 비용분석';
+              badgeClass = 'bg-blue-50 text-blue-600 border border-blue-200';
+            } else if (session.badge_type === 'TRAVEL') {
+              badgeText = '✈️ 출장정산';
+              badgeClass = 'bg-emerald-50 text-emerald-600 border border-emerald-200';
+            } else if (session.badge_type === 'RAG') {
+              badgeText = '📋 사규검색';
+              badgeClass = 'bg-orange-50 text-orange-600 border border-orange-200';
+            }
+
+            const starIcon = session.is_pinned 
+              ? `<i data-lucide="star" class="w-4 h-4 fill-amber-400 text-amber-500"></i>` 
+              : `<i data-lucide="star" class="w-4 h-4 text-slate-300 group-hover:text-amber-400 transition-colors"></i>`;
+
+            const cardBorderClass = session.is_pinned ? 'border-2 border-amber-200 shadow-md' : 'border border-slate-200 shadow-sm';
+
+            const timeObj = new Date(session.updated_at);
+            const formattedTime = `${timeObj.getMonth() + 1}월 ${timeObj.getDate()}일 ${String(timeObj.getHours()).zfill(2)}:${String(timeObj.getMinutes()).zfill(2)}`;
+
+            const cardHtml = `
+              <div onclick="resumePastSessionChain('${session.session_id}')" class="bg-white ${cardBorderClass} p-4 rounded-2xl hover:shadow-md transition-all relative group cursor-pointer">
+                <span class="absolute top-3 right-3 text-amber-500 cursor-pointer hover:scale-110 transition-transform p-1 z-10" onclick="toggleSessionBookmark('${session.session_id}', event)">
+                  ${starIcon}
+                </span>
+                <span class="px-2 py-0.5 text-[10px] font-bold ${badgeClass} rounded-md">${badgeText}</span>
+                <h4 class="font-bold text-slate-800 text-sm mt-2 truncate pr-6">${session.title}</h4>
+                <p class="text-[11px] text-slate-400 mt-1">업데이트: ${formattedTime}</p>
+              </div>`;
+            
+            gridContainer.insertAdjacentHTML('beforeend', cardHtml);
+          });
+          if (window.lucide) lucide.createIcons();
+        } else {
+          historyWrapper.classList.add('hidden');
+        }
+      } catch (err) {
+        console.error("히스토리 목록 스캔 무산:", err);
+      }
+    }
+
+    async function toggleSessionBookmark(sessionId, event) {
+      if (event) event.stopPropagation(); 
+      try {
+        const response = await fetch(`/api/chat/history/toggle-pin/${sessionId}`, { method: "POST" });
+        const result = await response.json();
+        if (result.success) {
+          showToast(result.is_pinned ? "⭐ 해당 대화가 즐겨찾기에 고정되어 영구 보존됩니다." : "🔄 즐겨찾기가 해제되었습니다.");
+          await renderHistoryDashboardGrid();
+        }
+      } catch (err) {
+        console.error("토글 핀 통신 예외:", err);
+      }
+    }
+
+    async function resumePastSessionChain(sessionId) {
+      document.body.classList.add('overflow-hidden', 'h-screen');
+      const chatView = document.getElementById('chat-view');
+      chatView.classList.add('h-[calc(100vh-180px)]', 'overflow-y-auto', 'pb-24');
+      document.getElementById('dashboard-view').classList.add('hidden');
+      chatView.classList.remove('hidden');
+      document.getElementById('sticky-input').classList.remove('hidden');
+      document.getElementById('loader').classList.remove('hidden');
+
+      currentActiveSessionId = sessionId;
+
+      try {
+        const response = await fetch(`/api/chat/history/detail/${sessionId}`);
+        const data = await response.json();
+        document.getElementById('loader').classList.add('hidden');
+
+        if (data.success && data.history) {
+          const container = document.getElementById('message-container');
+          container.innerHTML = ''; 
+          
+          let lastUserQuery = "";
+          let lastAIAnswer = "";
+
+          data.history.forEach((msg, idx) => {
+            const currentMsgId = `msg-restore-${sessionId}-${idx}`;
+            if (msg.role === 'user') {
+              lastUserQuery = msg.content;
+              const div = document.createElement('div');
+              div.className = "flex gap-4 justify-end src-user-msg";
+              div.innerHTML = `<div class="max-w-[80%] bg-blue-600 text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${msg.content}</div>`;
+              container.appendChild(div);
+            } else {
+              lastAIAnswer = msg.content;
+              const div = document.createElement('div');
+              div.className = "flex gap-4 justify-start src-ai-msg";
+              div.innerHTML = `
+                <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white"></i></div>
+                <div class="max-w-[90%] flex flex-col gap-3 flex-1">
+                  <div id="${currentMsgId}" class="bg-white border border-slate-200 p-6 rounded-2xl rounded-tl-none text-slate-800 text-[15px] shadow-sm min-h-[100px]"></div>
+                </div>`;
+              container.appendChild(div);
+              
+              // 🎯 [정해인 프로 무결성 연동 가드] 역사방 세션 복원 시에도 백엔드 NoSQL에 안전하게 아카이빙된 
+              // results 물리 배열과 links 원본 데이터를 그대로 밀어넣어 렌더링하도록 인프라 결합 성공
+              showAIResponse(msg, currentMsgId, "");
+            }
+          });
+
+          globalLastUserQuery = lastUserQuery;
+          globalLastAssistantAnswer = lastAIAnswer;
+        } else {
+          showToast("⚠️ 대화 내역을 인출하지 못했습니다: " + data.error);
+          resetUI();
+        }
+      } catch (err) {
+        showError(err);
+        resetUI();
+      }
+    }
+
+    async function startBrandNewChat() {
+      try {
+        const response = await fetch("/api/chat/reset", { method: "POST" });
+        const data = await response.json();
+        if (data.success) {
+          currentActiveSessionId = data.session_id;
+          resetUI();
+          await renderHistoryDashboardGrid();
+          showToast("🔄 깨끗한 새 창 대화 세션이 활성화되었습니다.");
+        }
+      } catch (err) {
+        console.error("새 대화 세션 생성 무산:", err);
+      }
+    }
+
+    String.prototype.zfill = function(size) {
+      let s = this;
+      while (s.length < size) s = "0" + s;
+      return s;
+    };
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-message').innerText = message;
+      toast.classList.remove('opacity-0', 'translate-y-4');
+      toast.classList.add('opacity-100', 'translate-y-0');
+      setTimeout(() => {
+        toast.classList.remove('opacity-100', 'translate-y-0');
+        toast.classList.add('opacity-0', 'translate-y-4');
+      }, 3000);
+    }
+
+    function rotatePlaceholder() {
+      const inputEl = document.getElementById('main-search-input');
+      if (!inputEl) return;
+      
+      let targetText = placeholderTemplates[currentPlaceholderIdx];
+      let currentText = "";
+      let letterIdx = 0;
+      inputEl.placeholder = ""; 
+      
+      const typeInterval = setInterval(() => {
+        if (letterIdx < targetText.length) {
+          currentText += targetText.charAt(letterIdx);
+          inputEl.placeholder = currentText;
+          letterIdx++;
+        } else {
+          clearInterval(typeInterval);
+          currentPlaceholderIdx = (currentPlaceholderIdx + 1) % placeholderTemplates.length;
+        }
+      }, 50);
+    }
+
+    function fillCapabilityChip(promptText) {
+      const mainInput = document.getElementById('main-search-input');
+      if (mainInput) {
+        mainInput.value = promptText;
+        mainInput.focus();
+      }
+    }
+
+    function resetUI() {
+      document.body.classList.remove('overflow-hidden', 'h-screen');
+      document.getElementById('dashboard-view').classList.remove('hidden');
+      document.getElementById('chat-view').classList.add('hidden');
+      document.getElementById('sticky-input').classList.add('hidden');
+      document.getElementById('message-container').innerHTML = '';
+      document.getElementById('main-search-input').value = '';
+      currentActiveSessionId = "default_session";
+      renderHistoryDashboardGrid();
+    }
+
+    function quickSearch(query) {
+      document.getElementById('main-search-input').value = query;
+      handleSearch('main-search-input');
+    }
+
+    async function handleSearch(inputId) {
+      const el = document.getElementById(inputId);
+      const query = el.value.trim();
+      if (!query) return;
+
+      document.body.classList.add('overflow-hidden', 'h-screen');
+      
+      const chatView = document.getElementById('chat-view');
+      chatView.classList.add('h-[calc(100vh-180px)]', 'overflow-y-auto', 'pb-24');
+
+      document.getElementById('dashboard-view').classList.add('hidden');
+      chatView.classList.remove('hidden');
+      document.getElementById('sticky-input').classList.remove('hidden');
+      document.getElementById('loader').classList.remove('hidden');
+
+      addMessage('user', query);
+      el.value = '';
+      
+      const currentMsgId = 'msg-' + Date.now();
+      addMessage('assistant', '', currentMsgId); 
+
+      if (currentActiveSessionId === "default_session") {
+        currentActiveSessionId = "session-portal-" + currentMsgId;
+      }
+
+      const requestPayload = {
+        current: query,
+        lastQ: globalLastUserQuery,
+        lastA: globalLastAssistantAnswer,
+        sessionId: currentActiveSessionId
+      };
+      
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestPayload)
+        });
+        
+        if (!response.ok) throw new Error(`HTTP 에러 발생 (코드 ${response.status})`);
+        
+        const data = await response.json();
+        showAIResponse(data, currentMsgId, query);
+        
+      } catch (err) {
+        showError(err);
+      }
+    }
+
+    function addMessage(role, text, msgId) {
+      const container = document.getElementById('message-container');
+      const div = document.createElement('div');
+      div.className = `flex gap-4 fade-in ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+      
+      if (role === 'user') {
+        div.innerHTML = `<div class="max-w-[80%] bg-blue-600 text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${text}</div>`;
+      } else {
+        div.innerHTML = `
+          <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0">
+            <i data-lucide="zap" class="w-5 h-5 text-white"></i>
+          </div>
+          <div class="max-w-[90%] flex flex-col gap-3 flex-1">
+            <div id="${msgId}" class="bg-white border border-slate-200 p-6 rounded-2xl rounded-tl-none text-slate-800 text-[15px] shadow-sm min-h-[100px]">
+              <div class="animate-pulse flex space-y-4 flex-col">
+                <div class="h-4 bg-slate-200 rounded w-3/4"></div>
+                <div class="h-4 bg-slate-200 rounded"></div>
+                <div class="h-4 bg-slate-200 rounded w-5/6"></div>
+              </div>
+            </div>
+          </div>`;
+      }
+      container.appendChild(div);
+      lucide.createIcons();
+      
+      if (chatView) {
+        chatView.scrollTo({ top: chatView.scrollHeight, behavior: 'smooth' });
+      }
+    }
+  </script>
+
+  <script>
+    // ====================================================================
+    // [SECTION 6] 🚀 다차원 멀티 차트 및 물리 DB 컬럼 다이렉트 해독 엔진 (Response Core)
+    // ====================================================================
+    function beautifySummary(text, msgId, chartConfigs, sourceConfigs) {
+      if(!text) return "";
+      let cleanText = text.replace(/^[ \t]*[\*\-][ \t]*$/gm, '');
+      
+      // 1. 📂 [SOURCE_REPORTS] 토큰 스플릿 완전 격리 해독 엔진 (따옴표 내 특수문자 완벽 가드)
+      if (cleanText.includes("[SOURCE_REPORTS]")) {
+        let sourceParts = cleanText.split("[SOURCE_REPORTS]");
+        let beforeSource = sourceParts[0];
+        let afterSource = sourceParts[1].trim();
+        
+        let firstBracket = afterSource.indexOf("[");
+        let brCount = 0;
+        let endArrIdx = -1;
+        let inQuotes = false;
+        
+        if (firstBracket !== -1) {
+          for (let i = firstBracket; i < afterSource.length; i++) {
+            if (afterSource[i] === '\\' && i + 1 < afterSource.length) { i++; continue; }
+            if (afterSource[i] === '"') { inQuotes = !inQuotes; continue; }
+            
+            // 쌍따옴표 바깥의 순수 JSON 구조용 대괄호 기호만 추적하여 [인사팀] 특수문자 완벽 가드
+            if (!inQuotes) {
+              if (afterSource[i] === '[') brCount++;
+              else if (afterSource[i] === ']') brCount--;
+              
+              if (brCount === 0) {
+                endArrIdx = i;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (endArrIdx !== -1) {
+          let jsonStr = afterSource.substring(firstBracket, endArrIdx + 1);
+          let remainder = afterSource.substring(endArrIdx + 1);
+          try {
+            const parsedSources = JSON.parse(jsonStr.trim());
+            parsedSources.forEach(s => {
+              sourceConfigs.push({
+                doc_name: s.doc_name || s.name || "",
+                doc_url: s.doc_url || s.url || "",
+                links: s.links || ""
+              });
+            });
+          } catch(e) {
+            console.error("출처 구조체 정공법 파싱 크래시 방어:", e);
+          }
+          cleanText = beforeSource + remainder;
+        }
+      }
+
+      // 2. 📊 [CHART_DATA] 토큰 스플릿 완전 격리 해독 엔진 (중첩 JSON 뻑남 방어)
+      if (cleanText.includes("[CHART_DATA]")) {
+        let chartParts = cleanText.split("[CHART_DATA]");
+        let beforeChart = chartParts[0];
+        let afterChart = chartParts[1].trim();
+        
+        let firstBrace = afterChart.indexOf("{");
+        let braceCount = 0;
+        let jsonEndObjIdx = -1;
+        let chartInQuotes = false;
+        
+        if (firstBrace !== -1) {
+          for (let i = firstBrace; i < afterChart.length; i++) {
+            if (afterChart[i] === '\\' && i + 1 < afterChart.length) { i++; continue; }
+            if (afterChart[i] === '"') { chartInQuotes = !chartInQuotes; continue; }
+            
+            if (!chartInQuotes) {
+              if (afterChart[i] === '{') braceCount++;
+              else if (afterChart[i] === '}') braceCount--;
+              
+              if (braceCount === 0) {
+                jsonEndObjIdx = i;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (jsonEndObjIdx !== -1) {
+          let jsonStr = afterChart.substring(firstBrace, jsonEndObjIdx + 1);
+          let remainder = afterChart.substring(jsonEndObjIdx + 1);
+          try {
+            const config = JSON.parse(jsonStr.trim());
+            chartConfigs.push({ id: `echart-zone-inline-${msgId}-dynamic`, config: config });
+          } catch(e) {
+            console.error("차트 구조체 정공법 파싱 크래시 방어:", e);
+          }
+          cleanText = beforeChart + remainder;
+        }
+      }
+
+      // 🚨 [정해인 프로 지정 가드 - Stray JSON 원천 배제 및 깨진 문자열 완전 세정]
+      if (cleanText.includes('"doc_name"') || cleanText.includes('"doc_url"')) {
+        let strayFirstBracket = cleanText.indexOf("[");
+        let strayBrCount = 0;
+        let strayEndIdx = -1;
+        let strayInQuotes = false;
+        
+        if (strayFirstBracket !== -1) {
+          for (let i = strayFirstBracket; i < cleanText.length; i++) {
+            if (cleanText[i] === '\\' && i + 1 < cleanText.length) { i++; continue; }
+            if (cleanText[i] === '"') { strayInQuotes = !strayInQuotes; continue; }
+            
+            if (!strayInQuotes) {
+              if (cleanText[i] === '[') strayBrCount++;
+              else if (cleanText[i] === ']') strayBrCount--;
+              
+              if (strayBrCount === 0) {
+                strayEndIdx = i;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (strayEndIdx !== -1 && strayEndIdx > strayFirstBracket) {
+          let strayJsonStr = cleanText.substring(strayFirstBracket, strayEndIdx + 1);
+          try {
+            const strayParsed = JSON.parse(strayJsonStr.trim());
+            strayParsed.forEach(s => {
+              if (!sourceConfigs.some(function(existing) { return existing.doc_url === (s.doc_url || s.url); })) {
+                sourceConfigs.push({
+                  doc_name: s.doc_name || s.name || "참조 문서",
+                  doc_url: s.doc_url || s.url || "",
+                  links: s.links || ""
+                });
+              }
+            });
+            cleanText = cleanText.substring(0, strayFirstBracket) + cleanText.substring(strayEndIdx + 1);
+          } catch(err) {
+              console.error("Stray JSON 가드 클리닝 실패:", err);
+          }
+        }
+      }
+
+      // 혹시 모를 잔여 컨텍스트 찌꺼기 최종 완벽 세정
+      cleanText = cleanText.replace(/\[SOURCE_REPORTS\][\s\S]*?$/gi, "").replace(/\[CHART_DATA\][\s\S]*?$/gi, "");
+
+      marked.use({ breaks: true, gfm: true });
+      let parsedHTML = marked.parse(cleanText);
+
+      // 모든 본문 내 마크다운 링크 <a> 태그에 target="_blank" 무조건 자율 주입
+      parsedHTML = parsedHTML.replace(/<a\s+href="([^"]+)"/gi, '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-blue-600 font-bold hover:underline inline-flex items-center gap-0.5"');
+
+      parsedHTML = parsedHTML.replace(/\[(\d+(?:,\s*\d+)*)\]/g, (match, nums) => {
+        const numArr = nums.split(',').map(n => n.trim());
+        return numArr.map(n => 
+          `<span class="citation-chip" onclick="scrollToDoc('${msgId}', ${n})">${n}</span>`
+        ).join(' ');
+      });
+
+      const highlightRegex = /(\d+(?:,\d{3})*(?:만원|원)|1박당|최대 \d+박|\d+km|\d+시간(?:\s*\d+분)?|\d+분|T\.\d{2,4}-\d{3,4}-\d{4}|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
+      parsedHTML = parsedHTML.replace(highlightRegex, '<span class="highlight-text">$1</span>');
+      return `<div class="summary-content prose-slate max-w-none">${parsedHTML}</div>`;
+    }
+
+    function showAIResponse(data, msgId, query) {
+      console.warn("🚨 [물리 필드 오디팅] 백엔드 응답 데이터 구조 스캔:", data);
+      document.getElementById('loader').classList.add('hidden');
+      const aiContentDiv = document.getElementById(msgId);
+      if (!aiContentDiv) return;
+      
+      let rawSummaryText = data.summary?.summaryText || data.clean_content || data.content || "";
+      let suggestions = [];
+      let chartConfigs = []; 
+      let sourceConfigs = []; 
+
+      // 🎯 [후속 질문 단추 동기화 레일 완공]
+      // 백엔드 main.py가 정교하게 분리 가공하여 배송해준 data.suggestions 배열 객체를 1순위로 다이렉트 바인딩!
+      if (data.suggestions && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+        suggestions = data.suggestions;
+      } else {
+        const parts = rawSummaryText.split('|||SUGGESTIONS|||');
+        if (parts.length > 1) {
+          rawSummaryText = parts[0].trim();
+          const sugText = parts[1].trim();
+          suggestions = sugText.split('\n')
+            .map(s => s.replace(/^[-\*\d\.\s]+/, '').trim())
+            .filter(s => s.length > 0)
+            .slice(0, 3);
+        }
+      }
+
+      if (query) {
+        globalLastUserQuery = query;
+        globalLastAssistantAnswer = rawSummaryText;
+      }
+      
+      let htmlContent = beautifySummary(rawSummaryText, msgId, chartConfigs, sourceConfigs);
+      if (!rawSummaryText) htmlContent = "<p class='text-slate-500 italic text-sm'>관련 정보를 사내 문서에서 찾을 수 없습니다.</p>";
+
+      // 물리 DB 컬럼 필드 규격인 doc_name, doc_url, links 기준 1:1 무결성 다이렉트 매핑 배치 가동
+      let normalizedSources = [];
+      let buttonLinks = [];
+
+      let targetResults = data.results || [];
+      let targetLinks = data.links || "[]";
+
+      // 대화 본진과 서랍장 데이터를 유실 없이 통합 합류
+      let combinedResults = [];
+      if (sourceConfigs && sourceConfigs.length > 0) {
+        sourceConfigs.forEach(item => {
+          combinedResults.push({ doc_name: item.doc_name, doc_url: item.doc_url, links: item.links });
+        });
+      }
+      if (targetResults && targetResults.length > 0) {
+        targetResults.forEach(item => {
+          const dUrl = item.doc_url || item.url || "#";
+          const dName = item.doc_name || item.name || "";
+          if (!combinedResults.some(c => c.doc_url === dUrl && c.doc_name === dName)) {
+            combinedResults.push({ doc_name: dName, doc_url: dUrl, links: item.links || "" });
+          }
+        });
+      }
+
+      if (combinedResults.length > 0) {
+        combinedResults.forEach(item => {
+          const name = item.doc_name || "";
+          const url = item.doc_url || "";
+          const linkCol = item.links || "";
+
+          // 규칙 1: doc_url이 유효하고 실제 구글 드라이브 문서에 속하면 ➔ 하단 [참조 문서 및 근거 카드] 안착
+          if (url && url !== "#" && url !== "") {
+            if (url.includes("notebooklm") || name.includes("바로가기") || name.includes("NotebookLM") || name.includes("Link")) {
+              if (!buttonLinks.some(b => b.url === url)) {
+                buttonLinks.push({ title: name, url: url });
+              }
+            } else {
+              if (!normalizedSources.some(s => s.link === url)) {
+                normalizedSources.push({ title: name, link: url });
+              }
+            }
+          }
+          // 규칙 2: 스프레드시트 추가 링크 컬럼(links)에 데이터 파킹되어 있으면 ➔ [하단 바로가기 알약 버튼] 강제 이관
+          if (linkCol && linkCol !== "#" && linkCol !== "") {
+            if (!buttonLinks.some(b => b.url === linkCol)) {
+              buttonLinks.push({ title: (name ? name.replace(/\.pdf$/i, '') : "참조") + " 바로가기", url: linkCol });
+            }
+          }
+        });
+      }
+
+      try {
+        if (targetLinks && targetLinks !== "[]") {
+          const parsedLinks = typeof targetLinks === 'string' ? JSON.parse(targetLinks) : targetLinks;
+          parsedLinks.forEach(link => {
+            if (!buttonLinks.some(b => b.url === link.url)) {
+              buttonLinks.push({ title: link.title, url: link.url });
+            }
+          });
+        }
+      } catch (e) { console.error("링크 디코딩 패닉 방어:", e); }
+
+      let docCardsHtml = '';
+      if (normalizedSources.length > 0) {
+        let cardsHtml = '';
+        normalizedSources.forEach((item, index) => {
+          const idx = index + 1;
+          cardsHtml += `
+            <div id="doc-card-${msgId}-${idx}" class="p-4 bg-white border border-blue-100 shadow-sm rounded-xl transition-all hover:border-blue-500 hover:shadow-md">
+              <div class="flex justify-between items-start mb-1.5">
+                <span class="text-[10px] font-bold text-blue-600 uppercase">✅ 주요 출처 #${idx}</span>
+                <a href="${item.link}" target="_blank" class="text-blue-500 hover:text-blue-700 flex items-center gap-1 text-xs font-bold transition-colors">
+                  문서 열기 <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+                </a>
+              </div>
+              <h4 class="font-bold text-sm text-slate-800 leading-snug">${item.title}</h4>
+            </div>`;
+        });
+        
+        docCardsHtml = `
+          <div class="mt-8 pt-6 border-t border-slate-100">
+            <h4 class="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
+              <i data-lucide="paperclip" class="w-3.5 h-3.5"></i> 참조 문서 및 근거
+            </h4>
+            <div class="flex flex-col gap-3">
+              ${cardsHtml}
+            </div>
+          </div>`;
+      }
+
+      let dynamicButtonsHtml = '';
+      if (buttonLinks && buttonLinks.length > 0) {
+        let btnBadges = '';
+        buttonLinks.forEach(link => {
+          btnBadges += `
+            <a href="${link.url}" target="_blank" 
+               class="inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-full text-xs font-bold shadow-sm hover:bg-blue-600 hover:text-white hover:border-blue-600 transition-all duration-200 group">
+              <i data-lucide="external-link" class="w-3.5 h-3.5 text-blue-500 group-hover:text-white transition-colors"></i>
+              ${link.title}
+            </a>`;
+        });
+        dynamicButtonsHtml = `<div class="mt-4 flex flex-wrap gap-2">${btnBadges}</div>`;
+      }
+
+      const safeQuery = query ? query.replace(/'/g, "\\'") : '';
+
+      let suggestionsHtml = '';
+      if (suggestions.length > 0) {
+        const sugBtns = suggestions.map(sug => {
+          const safeSug = sug.replace(/'/g, "\\'");
+          return `<button onclick="quickSearch('${safeSug}')" class="text-[13px] font-bold text-blue-600 bg-white px-4 py-2 rounded-full border border-blue-200 hover:bg-blue-50 hover:border-blue-400 transition-all shadow-sm flex items-center gap-1.5"><i data-lucide="sparkles" class="w-3.5 h-3.5 text-blue-500"></i> ${sug}</button>`;
+        }).join('');
+        suggestionsHtml = `<div class="mt-6 flex flex-wrap gap-2">${sugBtns}</div>`;
+      }
+
+      let actionButtonsHtml = `
+        <div class="flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 pt-3 mt-4">
+          <div class="flex items-center gap-1 sm:gap-2">
+            <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors" title="답변 복사" onclick="copyToClipboard('${msgId}')">
+              <i data-lucide="copy" class="w-4 h-4"></i> <span class="hidden sm:inline">복사</span>
+            </button>
+            <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors" title="다른 답변 생성" onclick="regenerateAnswer('${safeQuery}')">
+              <i data-lucide="refresh-ccw" class="w-4 h-4"></i> <span class="hidden sm:inline">재생성</span>
+            </button>
+          </div>
+          <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
+            <button class="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-white shadow-sm transition-all" title="좋은 답변입니다" onclick="submitPositiveFeedback('${safeQuery}')">
+              <i data-lucide="thumbs-up" class="w-4 h-4"></i>
+            </button>
+            <button class="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-white shadow-sm transition-all" title="아쉬운 답변입니다" onclick="openFeedbackModal('${safeQuery}')">
+              <i data-lucide="thumbs-down" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+      `;
+
+      // 멀티 차트 컨테이너 하우징 드로잉 및 이중화 유령 박스 원천 소멸
+      let finalChartsArray = [];
+      if (data.chartData) {
+        if (!Array.isArray(data.chartData)) {
+          finalChartsArray.push({ id: `echart-zone-native-${msgId}-main`, config: data.chartData });
+        } else {
+          data.chartData.forEach((cfg, idx) => {
+            finalChartsArray.push({ id: `echart-zone-native-${msgId}-${idx+1}`, config: cfg });
+          });
+        }
+      }
+      if (chartConfigs && chartConfigs.length > 0) {
+        chartConfigs.forEach(cc => {
+          if (!finalChartsArray.some(f => f.id === cc.id)) finalChartsArray.push(cc);
+        });
+      }
+
+      let dynamicChartCanvasHtml = "";
+      if (finalChartsArray.length > 0) {
+        finalChartsArray.forEach(chartItem => {
+          dynamicChartCanvasHtml += `\n\n<div id="${chartItem.id}" class="w-full h-[380px] my-6 bg-white border border-slate-200 shadow-xl shadow-slate-100/50 rounded-2xl p-5 fade-in"></div>\n\n`;
+        });
+      }
+
+      aiContentDiv.innerHTML = `
+        <div class="flex items-center gap-2 text-blue-600 font-bold mb-4">
+          <i data-lucide="check-circle" class="w-4 h-4 text-blue-600 font-bold"></i>
+          <span class="text-base tracking-tight">스마트 검색 결과</span>
+        </div>
+        ${htmlContent}
+        ${dynamicChartCanvasHtml}
+        ${dynamicButtonsHtml}
+        ${docCardsHtml}
+        ${suggestionsHtml}
+        ${actionButtonsHtml}
+      `;
+      
+      if (finalChartsArray.length > 0) {
+        setTimeout(() => {
+          finalChartsArray.forEach(chartItem => {
+            try {
+              const chartDom = document.getElementById(chartItem.id);
+              if (chartDom) {
+                const myChart = echarts.init(chartDom);
+                let rawInputData = chartItem.config;
+                
+                const colorsMatrix = [
+                  ['#3b82f6', '#1e3a8a'], 
+                  ['#10b981', '#065f46'], 
+                  ['#6366f1', '#3730a3'], 
+                  ['#f59e0b', '#9a3412']  
+                ];
+
+                let processedSeries = [];
+                if (rawInputData.series && rawInputData.series.length > 0) {
+                  processedSeries = rawInputData.series.map((s, idx) => {
+                    const colorSet = colorsMatrix[idx % colorsMatrix.length];
+                    return {
+                      name: s.name || `계열 ${idx+1}`,
+                      type: rawInputData.type || 'bar',
+                      data: s.data,
+                      barWidth: rawInputData.series.length > 1 ? '25%' : '40%',
+                      itemStyle: {
+                        borderRadius: [5, 5, 0, 0],
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                          { offset: 0, color: colorSet[0] },
+                          { offset: 1, color: colorSet[1] }
+                        ])
+                      }
+                    };
+                  });
+                }
+
+                const categoriesCount = rawInputData.categories ? rawInputData.categories.length : 0;
+                let dynamicDataZoom = [];
+                if (categoriesCount > 6 || processedSeries.length > 1) {
+                  dynamicDataZoom = [
+                    {
+                      type: 'slider',
+                      show: true,
+                      start: 0,
+                      end: categoriesCount > 10 ? 40 : 60, 
+                      height: 20,
+                      bottom: '2%',
+                      borderColor: 'transparent',
+                      backgroundColor: '#f1f5f9',
+                      fillerColor: 'rgba(59, 130, 246, 0.15)',
+                      handleIcon: 'path://M10.7,11.9v-1.3H9.3v1.3c-4.9,0.3-8.8,4.4-8.8,9.4c0,5,3.9,9.1,8.8,9.4v1.3h1.3v-1.3c4.9-0.3,8.8-4.4,8.8-9.4C19.5,16.3,15.6,12.2,10.7,11.9z M13.3,24.4H6.7V23h6.6V24.4z M13.3,19.6H6.7v-1.4h6.6V19.6z',
+                      handleSize: '80%',
+                      handleStyle: { color: '#3b82f6', shadowBlur: 3, shadowColor: 'rgba(0, 0, 0, 0.2)' },
+                      textStyle: { color: '#64748b', fontSize: 10 }
+                    },
+                    { type: 'inside', start: 0, end: 100 } 
+                  ];
+                }
+
+                const premiumOption = {
+                  title: { 
+                    text: rawInputData.title || '다차원 분석 통계', 
+                    left: 'center', 
+                    textStyle: { color: '#1e3a8a', fontSize: 16, fontWeight: 'bold' } 
+                  },
+                  legend: { top: '8%', left: 'center', textStyle: { color: '#64748b', fontSize: 11 } },
+                  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                  grid: { left: '4%', right: '4%', bottom: dynamicDataZoom.length > 0 ? '15%' : '8%', top: '20%', containLabel: true },
+                  xAxis: { 
+                    type: 'category', 
+                    data: rawInputData.categories || [],
+                    axisLabel: { 
+                      interval: 0, 
+                      rotate: categoriesCount > 4 ? 30 : 0, 
+                      textStyle: { color: '#64748b', fontSize: 11 } 
+                    }
+                  },
+                  yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } } },
+                  dataZoom: dynamicDataZoom, 
+                  series: processedSeries
+                };
+                
+                myChart.setOption(premiumOption);
+                const resizeObserver = new ResizeObserver(() => myChart.resize());
+                resizeObserver.observe(chartDom);
+              }
+            } catch(renderErr) {
+              console.error("❌ Apache ECharts 렌더링 실패:", renderErr);
+            }
+          });
+        }, 150);
+      }
+
+      lucide.createIcons();
+      const chatView = document.getElementById('chat-view');
+      if (chatView) {
+        chatView.scrollTo({ top: chatView.scrollHeight, behavior: 'smooth' });
+      }
+    }
+
+    function scrollToDoc(msgId, num) {
+      const cardId = `doc-card-${msgId}-${num}`;
+      const card = document.getElementById(cardId);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('highlight-card');
+        setTimeout(() => card.classList.remove('highlight-card'), 2000);
+      }
+    }
+
+    function showError(err) {
+      document.getElementById('loader').classList.add('hidden');
+      showToast("검색 오류: " + err.message);
+    }
+    
+    let currentFeedbackQuery = "";
+    let selectedReasons = new Set();
+
+    async function submitPositiveFeedback(query) {
+      const finalQuery = query || globalLastUserQuery;
+      try {
+        await fetch("/api/feedback/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: finalQuery, type: 'POSITIVE', reasons: [], comment: '' })
+        });
+        showToast("긍정적인 피드백이 전달되었습니다. 감사합니다!");
+      } catch (e) {
+        console.error("로그 적재 실패", e);
+      }
+    }
+
+    function openFeedbackModal(query) {
+      currentFeedbackQuery = query || globalLastUserQuery;
+      selectedReasons.clear();
+      document.getElementById('feedback-comment').value = '';
+      
+      const buttons = document.getElementById('feedback-reasons').querySelectorAll('button');
+      buttons.forEach(btn => {
+        btn.classList.remove('bg-blue-50', 'border-blue-400', 'text-blue-700', 'font-bold');
+      });
+      document.getElementById('feedback-modal').classList.remove('hidden');
+    }
+
+    function closeFeedbackModal() { 
+      document.getElementById('feedback-modal').classList.add('hidden'); 
+    }
+
+    function toggleReason(btn) {
+      const reason = btn.innerText;
+      if (selectedReasons.has(reason)) {
+        selectedReasons.delete(reason);
+        btn.classList.remove('bg-blue-50', 'border-blue-400', 'text-blue-700', 'font-bold');
+      } else {
+        selectedReasons.add(reason);
+        btn.classList.add('bg-blue-50', 'border-blue-400', 'text-blue-700', 'font-bold');
+      }
+    }
+
+    async function submitNegativeFeedback() {
+      const comment = document.getElementById('feedback-comment').value;
+      const reasonsArray = Array.from(selectedReasons);
+      
+      try {
+        await fetch("/api/feedback/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: currentFeedbackQuery || globalLastUserQuery, type: 'NEGATIVE', reasons: reasonsArray, comment: comment })
+        });
+        closeFeedbackModal();
+        showToast("피드백이 소중히 접수되었습니다. AI 개선에 활용하겠습니다!");
+      } catch (e) {
+        showToast("⚠️ 피드백 전송에 실패했습니다.");
+      }
+    }
+
+    function copyToClipboard(msgId) {
+      const container = document.getElementById(msgId);
+      if (!container) return;
+      const summaryElement = container.querySelector('.summary-content');
+      if (!summaryElement) return;
+
+      const clone = summaryElement.cloneNode(true);
+      const chips = clone.querySelectorAll('.citation-chip');
+      chips.forEach(chip => chip.remove());
+      const textToCopy = clone.innerText.trim();
+
+      const textarea = document.createElement('textarea');
+      textarea.value = textToCopy;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        showToast('✅ 답변이 복사되었습니다.');
+      } catch (err) {
+        showToast('복사에 실패했습니다.');
+      } finally {
+        document.body.removeChild(textarea);
+      }
+    }
+
+    function regenerateAnswer(query) {
+      if(!query) return;
+      showToast('🔄 새로운 답변을 다시 생성합니다...');
+      quickSearch(query);
+    }
+
+    function openGlobalFeedbackModal() {
+      document.getElementById('global-feedback-type').value = '기능 추가 제안';
+      document.getElementById('global-feedback-priority').value = '보통';
+      document.getElementById('global-feedback-title').value = '';
+      document.getElementById('global-feedback-content').value = '';
+      document.getElementById('global-feedback-modal').classList.remove('hidden');
+    }
+
+    function closeGlobalFeedbackModal() {
+      document.getElementById('global-feedback-modal').classList.add('hidden');
+    }
+
+    async function submitGlobalFeedback() {
+      const type = document.getElementById('global-feedback-type').value;
+      const priority = document.getElementById('global-feedback-priority').value;
+      const title = document.getElementById('global-feedback-title').value.trim();
+      const content = document.getElementById('global-feedback-content').value.trim();
+      const fileInput = document.getElementById('global-feedback-file');
+
+      if (!title || !content) {
+        showToast('⚠️ 제목과 상세 내용을 모두 입력해주세요.');
+        return;
+      }
+
+      const feedbackData = {
+        type: type,
+        priority: priority,
+        title: title,
+        content: content,
+        lastQuery: globalLastUserQuery || "질문 이력 없음"
+      };
+
+      const submitBtn = document.getElementById('global-feedback-submit-btn');
+      const originalHtml = submitBtn.innerHTML;
+      submitBtn.innerHTML = '<div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> 제출 중...';
+      submitBtn.disabled = true;
+
+      const executeSubmit = async (finalData) => {
+        try {
+          const response = await fetch("/api/feedback/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(finalData)
+          });
+          
+          const result = await response.json();
+          submitBtn.innerHTML = originalHtml;
+          submitBtn.disabled = false;
+          
+          if (result.success) {
+            closeGlobalFeedbackModal();
+            showToast("🎉 소중한 의견이 성공적으로 접수되었습니다!");
+            if (fileInput) fileInput.value = ""; 
+          } else {
+            showToast("⚠️ 접수 실패: " + result.error);
+          }
+        } catch (error) {
+          submitBtn.innerHTML = originalHtml;
+          submitBtn.disabled = false;
+          showToast("⚠️ 서버 통신 오류가 발생했습니다.");
+        }
+      };
+
+      if (fileInput && fileInput.files.length > 0) {
+        const file = fileInput.files[0];
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          feedbackData.fileData = e.target.result.split(',')[1]; 
+          feedbackData.fileName = file.name;
+          feedbackData.mimeType = file.type;
+          executeSubmit(feedbackData); 
+        };
+        reader.readAsDataURL(file); 
+      } else {
+        executeSubmit(feedbackData);
+      }
+    }
+  </script>
+</body>
+</html>

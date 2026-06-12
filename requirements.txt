@@ -1,7 +1,31 @@
+# =====================================================================
+# 🌐 코웨이 전사 AI 챗봇 V2 상용 배포용 청정 패키지 명세서 (버전 프리)
+# =====================================================================
+
+# 🖥️ CORE WEB & ASGI RUNTIME
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
+jinja2
+python-multipart
+
+# 🧠 AI ORCHESTRATION & AGENT GRAPH
 langchain
+langchain-core
+langchain-text-splitters
 langgraph
+
+# 📡 OFFICIAL GOOGLE GENAI & WORKSPACE SDK
+google-genai
 langchain-google-vertexai
+google-api-python-client
+
+# 📦 GCP GOLDEN STORAGE & ENTERPRISE BIGDATA
+google-cloud-bigquery
 google-cloud-firestore
+langgraph-checkpoint-firestore
+
+# 🌐 NETWORKING UTILS
+requests
+
+openpyxl

@@ -1,65 +1,122 @@
-# document_parser.py
 import os
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+import re
+import openpyxl 
+from google import genai
+from google.genai import types
 
-# 💡 GCP 프로젝트 정보 세팅
-PROJECT_ID = "hr-division-ai-rpa"
-# 💡 [핵심] 수석님 세팅과 동일하게 global 리전으로 맞춤!
+# GCP 프로젝트 정보 세팅
+PROJECT_ID = "gcp-cw-ai-chatbot"
 LOCATION = "global" 
 
-# Vertex AI 초기화
-vertexai.init(project=PROJECT_ID, location=LOCATION)
+client = genai.Client(
+    enterprise=True,
+    project=PROJECT_ID,
+    location=LOCATION
+)
 
-def parse_document_to_markdown(file_path: str) -> str:
+def extract_team_name_from_path(file_path: str) -> str:
     """
-    PDF 또는 이미지 파일을 읽어들여 표(Table)가 완벽히 보존된 Markdown으로 변환합니다.
+    실제 구글 드라이브 가상 경로든, 로컬 PC 경로든
+    슬래시(/)나 대괄호([ ]) 유무와 상관없이 'OO팀'만 완벽하게 사출하는 무결성 엔진
     """
-    print(f"📄 [{file_path}] 문서 파싱을 시작합니다...")
+    # 1. 윈도우 경로인 역슬래시(\)를 슬래시(/)로 통합 치환하여 표준화
+    normalized_path = file_path.replace("\\", "/")
     
-    # 1. 💡 [수정 완료] 수석님의 최신 환경에 맞춘 Gemini 3 Flash 모델 적용!
-    model = GenerativeModel("gemini-3-flash-preview") 
+    # 2. 경로 문자열을 슬래시 기준으로 쪼개서 폴더명 리스트 생성
+    path_segments = normalized_path.split("/")
     
-    # 2. 로컬 파일을 Gemini가 읽을 수 있는 형태로 변환
+    # 3. 가장 하위 폴더(오른쪽)부터 시작해서 역순으로 '팀' 자매품 탐색
+    for segment in reversed(path_segments):
+        # 혹시 모를 대괄호, 특수문자, 공백을 싹 벗겨내고 순수 텍스트만 추출
+        clean_segment = re.sub(r'[\[\]\s]', '', segment)
+        
+        # 정제된 폴더명이 '팀'으로 끝나면 (예: 총무팀, 인사전략팀, GHR팀 등) 즉시 반환!
+        if clean_segment.endswith("팀"):
+            return clean_segment
+            
+    # 4. [최종 방어선] 만약 분할 탐색에 실패했다면 전체 문자열에서 'OO팀' 형태를 정규식으로 통째로 추출
+    match = re.search(r'([가-힣\w]+팀)', normalized_path)
+    if match:
+        return match.group(1).replace("[", "").replace("]", "").strip()
+        
+    return "공통부서" # 끝까지 매칭이 안 될 경우 빅쿼리 널(Null) 방지용 기본값
+
+def parse_spreadsheet_to_markdown(file_path: str) -> str:
+    """Excel/구글시트 변환본 정밀 링크-데이터 파서"""
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=False)
+        md_sheets = []
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            md_sheets.append(f"## 📊 시트 탭명: {sheet_name}\n")
+            for row in sheet.iter_rows():
+                row_values = []
+                for cell in row:
+                    val = cell.value
+                    if val is None:
+                        row_values.append("")
+                        continue
+                    if cell.hyperlink:
+                        val = f"[{str(val)}]({cell.hyperlink.target})"
+                    elif str(val).startswith("=HYPERLINK"):
+                        match = re.search(r'HYPERLINK\(\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\)', str(val), re.IGNORECASE)
+                        if match:
+                            val = f"[{match.group(2)}]({match.group(1)})"
+                    row_values.append(str(val).replace("\n", " "))
+                if any(row_values):
+                    md_sheets.append("| " + " | ".join(row_values) + " |")
+            md_sheets.append("\n")
+        return "\n".join(md_sheets)
+    except Exception as e:
+        print(f"⚠️ [스프레드시트 파서 오작동]: {e}")
+        return ""
+
+def parse_document_to_markdown(file_path: str) -> tuple[str, str]:
+    """
+    [수정완료] 리턴값을 (마크다운결과, 동적추출된팀명) 튜플 형태로 전달하여
+    상위 파이프라인에서 빅쿼리 'dept_code' 또는 'dept_name' 컬럼에 즉시 꽂아넣을 수 있도록 개선했습니다.
+    """
+    # 🌟 프로님이 말씀하신 드라이브 폴더 기반 동적 팀명 추출 엔진 가동!
+    extracted_team = extract_team_name_from_path(file_path)
+    print(f"🎯 [드라이브 출처 추적 성공] 파일의 소속 부서: '{extracted_team}'")
+
+    # 1. 스프레드시트 검출 및 처리
+    if file_path.lower().endswith(('.xlsx', '.xls', '.csv')):
+        excel_md = parse_spreadsheet_to_markdown(file_path)
+        if excel_md:
+            return excel_md, extracted_team
+
+    # 2. Gemini 3.5 Flash 파이프라인 (PDF, 이미지)
+    model_name = "gemini-3.5-flash" 
     with open(file_path, "rb") as f:
         document_data = f.read()
     
-    # 파일 확장자에 따라 MIME 타입 지정
     mime_type = "application/pdf" if file_path.lower().endswith(".pdf") else "image/png"
-    document_part = Part.from_data(data=document_data, mime_type=mime_type)
+    document_part = types.Part.from_bytes(data=document_data, mime_type=mime_type)
     
-    # 3. 구조화 엔지니어링 프롬프트
     prompt = """
     당신은 세계 최고의 문서 구조화(Parsing) 전문가입니다.
     첨부된 문서를 읽고, 내용을 처음부터 끝까지 마크다운(Markdown) 포맷으로 완벽하게 변환하세요.
-    
-    [절대 준수 지침]
-    1. 문서에 포함된 표(Table)를 발견하면, 절대 텍스트로 풀어쓰지 말고 반드시 Markdown 표 문법(`| 항목 | 내용 |`)을 사용하여 행과 열의 구조를 100% 똑같이 재현하세요.
-    2. 표의 병합된 셀이 있다면, 문맥에 맞게 각 셀에 내용을 반복해서라도 표의 Grid 형태를 유지하세요.
-    3. 글머리 기호(Bullet points)나 번호 매기기 등도 마크다운 문법으로 살려주세요.
-    4. 내용을 요약하거나 생략하지 말고, 문서에 있는 모든 텍스트를 있는 그대로 추출하세요.
+    문서에 포함된 표(Table)나 셀 내부의 하이퍼링크 URL 주소는 Markdown 표 및 링크 문법으로 100% 복원해야 합니다.
     """
     
-    # 4. Gemini에게 파싱 지시!
-    print("🧠 Gemini 3 Flash가 문서의 레이아웃과 표 구조를 초고속으로 분석 중입니다...")
-    response = model.generate_content([document_part, prompt])
+    response = client.models.generate_content(
+        model=model_name,
+        contents=[document_part, prompt]
+    )
     
-    print("✅ 문서 파싱 완료!")
-    return response.text
+    return response.text, extracted_team
 
 # ==========================================
-# 🧪 테스트용 실행 코드
+# 🧪 테스트용 실행 코드 (드라이브 경로 시뮬레이션)
 # ==========================================
 if __name__ == "__main__":
-    # 테스트할 PDF 파일 경로를 여기에 넣으세요 (예: 사규 문서, 여비지침 등)
-    test_file = "sample_rule.pdf" 
+    # 🧪 일부러 경로에 '총무팀'과 '본사사옥관리'를 가짜로 섞어 넣은 가상 경로 생성
+    fake_drive_path = "C:/G_Drive/경영지원본부/총무팀/본사사옥관리/sample_rule.pdf"
     
-    if os.path.exists(test_file):
-        markdown_result = parse_document_to_markdown(test_file)
-        print("\n" + "="*50)
-        print("🎯 [파싱 결과 (Markdown)]")
-        print("="*50)
-        print(markdown_result)
-        print("="*50)
-    else:
-        print(f"⚠️ 테스트할 '{test_file}' 파일을 폴더에 넣어주세요!")
+    # 1. 파일이 실제로 없더라도 팀명 추출이 잘 되는지 먼저 검증!
+    detected_team = extract_team_name_from_path(fake_drive_path)
+    print("\n" + "="*50)
+    print(f"📁 가상 드라이브 입력 경로: {fake_drive_path}")
+    print(f"🎯 동적 추출된 출처 부서명: {detected_team} (➔ '총무팀'이 나오면 대성공!)")
+    print("="*50 + "\n")
