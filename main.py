@@ -66,7 +66,7 @@ def get_iap_user_email(request: Request) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     print("🖥️ [포털 접속] 최전방 HTML 고속 통로 연동 성공")
-    html_file_path = os.path.join("templates", "Index.html")
+    html_file_path = os.path.join("templates", "index.html")
     try:
         with open(html_file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
