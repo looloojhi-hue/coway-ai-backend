@@ -573,8 +573,10 @@ def email_write_node(state: AgentState):
         gmail.users().drafts().create(userId=user_email, body={"message": {"raw": encoded_message}}).execute()
         print("✅ [EMAIL_WRITE] Gmail 임시보관함 적재 성공")
     except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
         print(f"⚠️ Gmail 연동 실패: {str(e)}")
-        
+
     return {"messages": [AIMessage(content=f"✨ **이메일 초안 작성이 완료되었습니다!**\n\nGmail의 **[임시보관함]**에 메일을 안전하게 저장해 두었습니다.\n\n---\n\n{ai_response}")]}
 
 def email_read_node(state: AgentState):
@@ -603,6 +605,8 @@ def email_read_node(state: AgentState):
             snippet = msg.get('snippet', '내용 없음')
             email_text += f"[메일 {idx + 1}]\n- 보낸사람: {sender}\n- 제목: {subject}\n- 내용: {snippet}...\n\n"
     except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
         print(f"⚠️ Gmail 읽기 에러: {str(e)}")
         return {"messages": [AIMessage(content="⚠️ 메일 접근 권한이 없거나 불러오는 중 오류가 발생했습니다.")]}
 
@@ -640,6 +644,8 @@ def calendar_read_node(state: AgentState):
                 desc_str = f"\n ↳ 상세내용: {desc}" if desc else ""
                 schedule_text += f"- [일정] {time_str} 시작 | {e.get('summary')}{desc_str}\n"
     except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
         print(f"⚠️ 캘린더 읽기 에러: {str(e)}")
         schedule_text = "권한 오류"
 
@@ -687,6 +693,8 @@ def calendar_write_node(state: AgentState):
         m1 = str(data.startMinute).zfill(2)
         return {"messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **시간:** {data.month}월 {data.day}일 {h1}:{m1} 시작\n\n구글 캘린더에 완벽하게 연동되었습니다.")]}
     except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
         print(f"⚠️ 캘린더 등록 에러: {str(e)}")
         return {"messages": [AIMessage(content=f"⚠️ 일정 추가 중 오류가 발생했습니다. 에러 상세: {str(e)}")]}
 
@@ -713,6 +721,8 @@ def task_read_node(state: AgentState):
         ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
         return {"messages": [AIMessage(content=f"✅ **오늘의 할 일 브리핑**\n\n{ai_response}")]}
     except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
         print(f"⚠️ Tasks 읽기 에러: {str(e)}")
         return {"messages": [AIMessage(content="⚠️ 할 일을 불러오는데 실패했습니다. Tasks 권한을 확인해주세요.")]}
 
@@ -749,6 +759,8 @@ def task_write_node(state: AgentState):
         due_text = f"\n- **마감일:** {data.due}" if data.due else ""
         return {"messages": [AIMessage(content=f"✅ **성공적으로 할 일(Tasks)에 등록되었습니다!**\n\n- **할 일:** {data.title}{due_text}\n\n우측 구글 워크스페이스 패널의 Tasks 탭에서 확인하실 수 있습니다.")]}
     except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
         print(f"⚠️ Tasks 등록 에러: {str(e)}")
         return {"messages": [AIMessage(content=f"⚠️ 할 일 등록 중 오류가 발생했습니다: {str(e)}")]}
 

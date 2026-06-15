@@ -1,13 +1,16 @@
 import os
+import base64
 import datetime  # 🎯 만족도 피드백 타임스탬프 고속 사출용
 import json
 import re
+import urllib.parse
+import requests as http_requests
 from fastapi import FastAPI, Request, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
-from google.cloud import bigquery  # 🎯 피드백 데이터 실시간 빅쿼리 스트리밍용 
+from google.cloud import bigquery  # 🎯 피드백 데이터 실시간 빅쿼리 스트리밍용
 from langchain_core.messages import HumanMessage, AIMessage
 from google.cloud import firestore  # 🎯 파이어스토어 실시간 제어 드라이버
 
@@ -17,8 +20,43 @@ from graph import coway_agent_app, log_to_analytics_v2
 app = FastAPI(title="Coway AI Smart Search Portal", version="2.5")
 
 # 🗄️ [인프라 기술 주입] 구글 공식 파이어스토어 클라이언트 바인딩
-db_fs = firestore.Client(project="gcp-cw-ai-chatbot")
+PROJECT_ID = "gcp-cw-ai-chatbot"
+db_fs = firestore.Client(project=PROJECT_ID)
 COLLECTION_NAME = "coway_chat_sessions"
+
+# ====================================================================
+# 🛡️ [워크스페이스 최소 권한 원칙] OAuth 2.0 스코프 선언
+# gmail.modify(과도한 권한) 배제 — 읽기 전용 + 초안 작성으로 분리
+# ====================================================================
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",  # 메일 요약 및 읽기 전용
+    "https://www.googleapis.com/auth/gmail.compose",   # 초안 작성 (메일 삭제/수정 불가)
+    "https://www.googleapis.com/auth/calendar",         # 캘린더 조회 및 일정 등록
+    "https://www.googleapis.com/auth/tasks"             # Tasks 조회 및 등록
+]
+
+# OAuth 2.0 클라이언트 자격증명 — GCP Console에서 발급된 값을 Cloud Run 환경변수로 주입
+GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+GOOGLE_OAUTH_REDIRECT_URI = os.environ.get(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    "http://localhost:8080/api/oauth2callback"
+)
+# ====================================================================
+
+
+def _build_google_auth_url(state: str) -> str:
+    """PKCE 없이 OAuth 2.0 인증 URL을 직접 생성 — flow.authorization_url()의 자동 PKCE 주입 우회"""
+    params = {
+        "client_id": GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return "https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode(params)
 
 # 📂 static 창고 및 templates 가방 인프라 포지셔닝
 if os.path.exists("static"):
@@ -180,8 +218,24 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
     }
     
     print("================ LangGraph 시작 ================")
-    config = {"configurable": {"thread_id": session_id}}  
-    final_state = coway_agent_app.invoke(initial_state, config=config)
+    config = {"configurable": {"thread_id": session_id}}
+    try:
+        final_state = coway_agent_app.invoke(initial_state, config=config)
+    except Exception as invoke_err:
+        if "AUTH_REQUIRED_FOR:" in str(invoke_err):
+            auth_email = str(invoke_err).split("AUTH_REQUIRED_FOR:")[-1].strip()
+            print(f"🔐 [OAuth 필요] 워크스페이스 연동 인증 요청 → {auth_email}")
+            return {
+                "summary": {"summaryText": "구글 워크스페이스 연동을 위해 인증이 필요합니다. 잠시 후 인증 창이 열립니다."},
+                "auth_required": True,
+                "auth_email": auth_email,
+                "chartData": None,
+                "results": [],
+                "links": "[]",
+                "suggestions": [],
+                "sessionId": session_id,
+            }
+        raise
     print("================ LangGraph 종료 ================\n")
     
     raw_content = final_state["messages"][-1].content
@@ -202,6 +256,21 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
         clean_answer_body = parts[0].strip()
         if len(parts) > 1:
             suggestions_payload = [re.sub(r'^[-\*\d\.\s]+', '', s).strip() for s in parts[1].strip().split("\n") if s.strip()]
+
+    # 🔐 LangGraph 노드가 AUTH_REQUIRED 예외를 텍스트로 삼킨 케이스 감지 (노드 내부 except가 먼저 잡는 경우)
+    if "AUTH_REQUIRED_FOR:" in clean_answer_body:
+        auth_email = clean_answer_body.split("AUTH_REQUIRED_FOR:")[-1].split()[0].strip()
+        print(f"🔐 [OAuth 필요 - 텍스트 감지] 워크스페이스 연동 인증 요청 → {auth_email}")
+        return {
+            "summary": {"summaryText": "구글 워크스페이스 연동을 위해 인증이 필요합니다. 잠시 후 인증 창이 열립니다."},
+            "auth_required": True,
+            "auth_email": auth_email,
+            "chartData": None,
+            "results": [],
+            "links": "[]",
+            "suggestions": [],
+            "sessionId": session_id,
+        }
 
     # LLM의 [SOURCE_REPORTS]를 1순위로 채우고, 그래프 추출 소스는 미등록 URL에 한해 보완
     # (역순이었을 때: generic "참고 사규 지침서 N" 이름이 URL을 선점 → LLM의 정확한 파일명이 dedup에 차단되는 버그)
@@ -419,22 +488,81 @@ async def save_global_feedback_endpoint(payload: GlobalFeedbackSaveRequest, user
         return {"success": False, "error": str(err)}
 
 # ====================================================================
-# [SECTION 8] 🔐 [WBS 2.5] 정통 OAuth 2.0 콜백 인증 토큰 수신 수문장 (선제 매립)
+# [SECTION 8] 🔐 [WBS 2.5] 구글 워크스페이스 OAuth 2.0 인증 게이트웨이
 # ====================================================================
+
+@app.get("/api/auth/google")
+async def initiate_google_oauth(email: str, request: Request):
+    """OAuth 인증 URL 생성 — 프론트엔드가 팝업으로 오픈"""
+    print(f"🔐 [OAuth 시작] 인증 URL 요청 → {email}")
+    state = base64.urlsafe_b64encode(email.encode()).decode()
+    auth_url = _build_google_auth_url(state)
+    return {"auth_url": auth_url}
+
+
 @app.get("/api/oauth2callback")
 async def google_oauth2_callback_gateway(request: Request):
-    print("🔐 [OAuth 콜백 수신] 임직원이 자발적으로 승인한 구글 OAuth 인증 패킷 도달!")
+    """OAuth 인증 코드 수신 → 토큰 교환 → Firestore 저장"""
+    print("🔐 [OAuth 콜백] 구글 인증 패킷 수신")
+    error = request.query_params.get("error")
+    if error:
+        print(f"❌ [OAuth 거부] 사용자가 권한 승인을 거부했습니다: {error}")
+        return HTMLResponse(content="""
+            <html><body style='text-align:center;padding-top:100px;font-family:sans-serif;'>
+                <h2 style='color:#dc2626;'>❌ 인증이 취소되었습니다</h2>
+                <p>권한 승인이 거부되었습니다. 창을 닫고 다시 시도해주세요.</p>
+                <script>setTimeout(() => { window.close(); }, 3000);</script>
+            </body></html>
+        """)
+
     code = request.query_params.get("code")
     state = request.query_params.get("state")
-    return HTMLResponse(content="""
-        <html>
-            <body style='text-align:center; padding-top:100px; font-family:sans-serif;'>
+
+    try:
+        user_email = base64.urlsafe_b64decode(state.encode()).decode()
+
+        # flow.fetch_token() 대신 직접 POST — PKCE code_verifier 이슈 우회
+        token_resp = http_requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": GOOGLE_OAUTH_CLIENT_ID,
+                "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
+                "redirect_uri": GOOGLE_OAUTH_REDIRECT_URI,
+                "grant_type": "authorization_code",
+            },
+        )
+        token_data = token_resp.json()
+        if "error" in token_data:
+            raise Exception(f"토큰 교환 실패: {token_data.get('error')} — {token_data.get('error_description', '')}")
+
+        db_fs_local = firestore.Client(project=PROJECT_ID)
+        db_fs_local.collection("user_tokens").document(user_email).set({
+            "access_token": token_data.get("access_token"),
+            "refresh_token": token_data.get("refresh_token"),
+            "client_id": GOOGLE_OAUTH_CLIENT_ID,
+            "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }, merge=True)
+
+        print(f"✅ [OAuth 완료] 토큰 저장 성공 → {user_email}")
+        return HTMLResponse(content="""
+            <html><body style='text-align:center;padding-top:100px;font-family:sans-serif;'>
                 <h2 style='color:#2563eb;'>🔒 구글 업무 시스템 인증 성공!</h2>
-                <p>보안 세션 금고에 안전하게 등록되었습니다. 이 창을 닫고 챗봇으로 복귀하십시오.</p>
-                <script>setTimeout(() => { window.close(); }, 2500);</script>
-            </body>
-        </html>
-    """)
+                <p>보안 세션 금고에 안전하게 등록되었습니다. 이 창을 닫으면 챗봇이 자동으로 재시도합니다.</p>
+                <script>setTimeout(() => { window.close(); }, 2000);</script>
+            </body></html>
+        """)
+
+    except Exception as e:
+        print(f"❌ [OAuth 콜백 실패] {e}")
+        return HTMLResponse(content=f"""
+            <html><body style='text-align:center;padding-top:100px;font-family:sans-serif;'>
+                <h2 style='color:#dc2626;'>❌ 인증 처리 중 오류가 발생했습니다</h2>
+                <p>{str(e)}</p>
+                <script>setTimeout(() => {{ window.close(); }}, 4000);</script>
+            </body></html>
+        """, status_code=500)
 
 # ====================================================================
 # [SECTION 9] ⏰ [WBS 2.0] 구글 드라이브 지식 베이스 자율 CRUD 스케줄러

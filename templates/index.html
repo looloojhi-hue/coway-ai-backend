@@ -584,6 +584,48 @@
         if (!response.ok) throw new Error(`HTTP 에러 발생 (코드 ${response.status})`);
         
         const data = await response.json();
+
+        // ====================================================================
+        // 🔐 구글 워크스페이스 OAuth 인증 필요 시 팝업 처리
+        // ====================================================================
+        if (data.auth_required) {
+          document.getElementById('loader').classList.add('hidden');
+          const aiDiv = document.getElementById(currentMsgId);
+          if (aiDiv) {
+            aiDiv.innerHTML = '<p class="text-slate-400 text-sm italic">🔐 구글 워크스페이스 인증 후 자동으로 답변드립니다...</p>';
+          }
+          try {
+            const authRes = await fetch(`/api/auth/google?email=${encodeURIComponent(data.auth_email)}`);
+            const authData = await authRes.json();
+            const popup = window.open(authData.auth_url, 'google-oauth-popup', 'width=520,height=680,top=100,left=200');
+            showToast("🔐 구글 계정 인증창이 열렸습니다. 권한 승인 후 자동으로 재시도됩니다.");
+
+            const pollTimer = setInterval(async () => {
+              if (!popup || popup.closed) {
+                clearInterval(pollTimer);
+                showToast("✅ 인증 완료! 잠시 후 답변드립니다...");
+                try {
+                  const retryRes = await fetch("/api/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(requestPayload)
+                  });
+                  if (!retryRes.ok) throw new Error(`재시도 실패 (${retryRes.status})`);
+                  const retryData = await retryRes.json();
+                  showAIResponse(retryData, currentMsgId, query);
+                  await renderHistoryDashboardGrid();
+                } catch (retryErr) {
+                  showError(retryErr);
+                }
+              }
+            }, 1000);
+          } catch (authErr) {
+            showError(authErr);
+          }
+          return;
+        }
+        // ====================================================================
+
         showAIResponse(data, currentMsgId, query);
         await renderHistoryDashboardGrid();
 
