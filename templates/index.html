@@ -29,7 +29,9 @@
     .highlight-text { color: #2563eb; font-weight: 700; background: #eff6ff; padding: 0 2px; border-radius: 2px; }
     
     /* 마크다운 변환 본문 가독성 전사 표준 스타일 지정 */
-    .summary-content { font-size: 15px; color: #334155; line-height: 1.7; }
+    .summary-content { font-size: 15px; color: #334155; line-height: 1.7; overflow-wrap: break-word; word-break: break-word; overflow-x: hidden; max-width: 100%; }
+    .summary-content pre { white-space: pre-wrap; word-break: break-all; overflow-x: auto; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; font-size: 13px; max-width: 100%; }
+    .summary-content code { word-break: break-all; white-space: pre-wrap; }
     .summary-content h1, .summary-content h2, .summary-content h3 { 
       font-weight: 700; color: #1e3a8a; 
       display: block; margin-top: 20px; margin-bottom: 8px;
@@ -646,8 +648,8 @@
           <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0">
             <i data-lucide="zap" class="w-5 h-5 text-white"></i>
           </div>
-          <div class="max-w-[90%] flex flex-col gap-3 flex-1">
-            <div id="${msgId}" class="bg-white border border-slate-200 p-6 rounded-2xl rounded-tl-none text-slate-800 text-[15px] shadow-sm min-h-[100px]">
+          <div class="max-w-[90%] flex flex-col gap-3 flex-1 min-w-0 overflow-hidden">
+            <div id="${msgId}" class="bg-white border border-slate-200 p-6 rounded-2xl rounded-tl-none text-slate-800 text-[15px] shadow-sm min-h-[100px] overflow-x-hidden">
               <div class="animate-pulse flex space-y-4 flex-col">
                 <div class="h-4 bg-slate-200 rounded w-3/4"></div>
                 <div class="h-4 bg-slate-200 rounded"></div>
