@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 코웨이 전사 AI 챗봇 "코봇" — a FastAPI backend deployed on Google Cloud Run that serves an internal employee chatbot. It uses LangGraph for multi-agent orchestration and Gemini 3.5 Flash as the AI engine.
 
+## Repository
+
+- **GitHub**: https://github.com/looloojhi-hue/coway-ai-backend.git
+- **Branch**: `master` (default push/pull target)
+
 ## Commands
 
 ```bash

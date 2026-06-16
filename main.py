@@ -208,13 +208,14 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
     initial_state = {
         "messages": messages_list,
         "current_intent": "",
+        "pending_intents": [],
         "refined_query": "",
         "retrieved_docs": "",
-        "sources": [],           
+        "sources": [],
         "user_info": {"email": user_email},
         "top_dept_code": "분류 불가",
-        "bq_error_log": "",      
-        "bq_retry_count": 0      
+        "bq_error_log": "",
+        "bq_retry_count": 0
     }
     
     print("================ LangGraph 시작 ================")
@@ -282,17 +283,20 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
             d_links = ps.get("links") or ""
             source_results.append({"doc_name": d_name, "doc_url": d_url, "links": d_links})
 
-    for s in final_state.get("sources", []):
-        s_url = s.get("doc_url", "")
-        if s_url and not any(x.get("doc_url") == s_url for x in source_results):
-            source_results.append(s)
+    # LLM이 [SOURCE_REPORTS]를 명시한 경우 그것만 사용 — 미인용 문서가 자동 추가되는 문제 방지
+    if not parsed_source_data:
+        for s in final_state.get("sources", []):
+            s_url = s.get("doc_url", "")
+            if s_url and not any(x.get("doc_url") == s_url for x in source_results):
+                source_results.append(s)
 
     intent = final_state.get("current_intent", "GENERAL")
     response_status = "SUCCESS"
-    
+
     if intent == "RAG" and "찾을 수 없습니다" in clean_answer_body:
         response_status = "FAIL"
         clean_answer_body = "죄송합니다. 관련 규정을 찾지 못해 관련 부서로 내용 보강 요청을 드리겠습니다. 관련 질문은 담당부서로 직접 문의바랍니다."
+        source_results = []  # 답변 없으면 출처도 표시 안함
 
     user_agent_str = request.headers.get("user-agent", "Unknown-Agent")
     log_payload = {

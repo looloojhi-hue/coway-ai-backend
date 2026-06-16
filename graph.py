@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated, Sequence, Literal
+from typing import TypedDict, Annotated, Sequence, Literal, List
 from langchain_core.messages import BaseMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 import operator
@@ -39,6 +39,7 @@ ai_client = genai.Client(
 # 빅쿼리 클라이언트
 bq_client = bigquery.Client(project=PROJECT_ID)
 
+
 # 🛡️ [Phase 5.0 신설] 기술보안팀 정원재 소장님 확정 Model Armor 쉴드 룸 세팅
 MODEL_ARMOR_LOCATION = "asia-northeast3"  # 👈 서울 리전 타격 고정
 MODEL_ARMOR_TEMPLATE_URI = f"projects/{PROJECT_ID}/locations/{MODEL_ARMOR_LOCATION}/templates/coway-chatbot-template"
@@ -58,18 +59,19 @@ def get_model_armor_headers():
 # ==========================================
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
-    current_intent: str      
-    refined_query: str       
-    retrieved_docs: str      
+    current_intent: str
+    pending_intents: list    # 복수 업무 요청 시 순차 처리 대기 큐
+    refined_query: str
+    retrieved_docs: str
     sources: list       # 💡 main.py를 거쳐 프론트엔드로 출처 파일 명단을 무결하게 배달할 보관함
-    user_info: dict    
+    user_info: dict
     top_dept_code: str  # 🎯 낚아챈 부서 코드를 임시 저장할 장부 칸
     bq_error_log: str   # 🛠️ [Phase 4.3] 빅쿼리 런타임 에러 추적 메모리 칸 추가
     bq_retry_count: int # 🛠️ [Phase 4.3] 무한 루프 탈출용 재시도 카운터 장부 추가
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
-    intent: str = Field(description="RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, CALENDAR_READ, CALENDAR_WRITE, TASK_READ, TASK_WRITE 중 하나")
+    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, CALENDAR_READ, CALENDAR_WRITE, TASK_READ, TASK_WRITE 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
 
 class RefinedQuery(BaseModel):
     query: str = Field(description="명사 위주의 핵심 키워드 조합")
@@ -130,25 +132,46 @@ def get_workspace_service(service_name: str, version: str, user_email: str):
 # ==========================================
 # 에이전트 핵심 노드(Node) 함수 설계 구간
 # ==========================================
+def get_last_human_input(state: AgentState) -> str:
+    """멀티인텐트 실행 중 AIMessage가 쌓여도 항상 원본 사용자 질문을 반환"""
+    for msg in reversed(state["messages"]):
+        if hasattr(msg, 'type') and msg.type == "human":
+            return msg.content
+    return ""
+
 def supervisor_node(state: AgentState):
     print("🚦 [Supervisor] 제미나이 3.5가 의도를 파악 중입니다...")
-    user_input = state["messages"][-1].content
-    
+    user_input = get_last_human_input(state)
+
     prompt = f"""
-    당신은 코웨이 전사 AI 챗봇의 총괄 지휘자입니다. 사용자 질문을 분석하여 아래 의도 중 하나로 정확하게 분류하세요:
-    - RAG: 사내 규정, 복리후생, 인사, 가이드 등 텍스트 문서 검색이 필요한 질문
-    - BQ: 매출액, 실적, 예산, 판매량 등 DB에서 수치 데이터 조회가 필요한 질문 (예: 집행비용 분석, 출장현황 분석)
+    당신은 코웨이 전사 AI 챗봇의 총괄 지휘자입니다.
+    사용자 질문을 분석하여 수행해야 할 모든 작업을 intents 목록에 순서대로 담아 반환하세요.
+    단일 요청이면 항목 1개, 복수 요청이면 2개 이상을 포함하세요.
+
+    [의도 분류 기준]
+    - RAG: 사내 규정, 복리후생, 인사, 가이드 등 텍스트 문서 검색
+    - BQ: 매출액, 실적, 예산, 판매량 등 수치 데이터 조회 (예: 집행비용 분석, 출장현황 분석)
     - GENERAL: 단순 인사, 안부, 일상 대화 (예: 안녕, 넌 누구야)
-    - EMAIL_WRITE: 메일이나 이메일 작성, 초안 작성, 답장 요청 (예: 팀장님께 보낼 휴가 신청 메일 써줘)
-    - EMAIL_READ: 이메일 요약, 읽어주기, 확인, 브리핑 요청 (예: 오늘 온 안읽은 메일 요약해줘)
-    - CALENDAR_WRITE: 캘린더 일정 추가, 등록, 회의 생성 요청 (예: 내일 오후 3시에 미팅 일정 잡아줘)
-    - CALENDAR_READ: 일정 조회, 오늘 스케줄 브리핑 요청 (예: 오늘 내 미팅 일정 알려줘)
-    - TASK_WRITE: 할 일 등록, 테스크 추가 요청 (예: 오늘 마케팅 보고서 작성 할일 등록해줘)
-    - TASK_READ: 할 일 조회, 테스크 목록 브리핑 요청 (예: 오늘 내가 해야할 업무 리스트 보여줘)
+    - EMAIL_WRITE: 메일/이메일 작성, 초안 작성, 답장 요청
+    - EMAIL_READ: 이메일 요약, 읽기, 확인 요청
+    - CALENDAR_WRITE: 캘린더/일정/스케줄 추가·등록·생성 요청 (예: 내일 오후 3시 미팅 일정 잡아줘)
+    - CALENDAR_READ: 캘린더/일정 조회·확인 요청 (예: 오늘 내 미팅 일정 알려줘)
+    - TASK_WRITE: 할일·할 일·해야 할 일·테스크·태스크·투두·TODO·to-do 등록·추가 요청
+    - TASK_READ: 할일·할 일·해야 할 일·테스크 목록 조회·확인 요청
+    [★ 핵심 구분 규칙 - 반드시 준수]
+    1. "할일", "할 일", "해야 할 일", "테스크", "태스크", "투두", "to-do", "체크리스트" 키워드 → TASK_WRITE 또는 TASK_READ
+       ※ 이 키워드가 포함된 요청은 절대로 CALENDAR로 분류하지 마세요.
+    2. "일정", "캘린더", "calendar", "스케줄", "미팅", "회의", "약속" 키워드 → CALENDAR_WRITE 또는 CALENDAR_READ
+    3. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
+
+    [복수 요청 예시]
+    - "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
+    - "메일 요약하고 오늘 일정도 알려줘" → ["EMAIL_READ", "CALENDAR_READ"]
+    - "파이썬 교육 할일 등록해줘, 캘린더에는 내일 1시로 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
 
     질문: {user_input}
     """
-    
+
     response = ai_client.models.generate_content(
         model=MODEL_NAME,
         contents=prompt,
@@ -158,10 +181,18 @@ def supervisor_node(state: AgentState):
         ),
     )
     decision_data = json.loads(response.text)
-    intent = decision_data.get("intent", "GENERAL")
-    print(f"✅ [Supervisor] 판단 결과: {intent}")
-    
-    return {"current_intent": intent, "bq_retry_count": 0, "bq_error_log": "", "sources": []}
+    intents = decision_data.get("intents", ["GENERAL"])
+    if not intents:
+        intents = ["GENERAL"]
+
+    print(f"✅ [Supervisor] 판단 결과: {intents}")
+    return {
+        "current_intent": intents[0],
+        "pending_intents": intents[1:],
+        "bq_retry_count": 0,
+        "bq_error_log": "",
+        "sources": []
+    }
 
 def rag_refiner_node(state: AgentState):
     print("🔍 [RAG Refiner] 이전 대화 맥락까지 고려하여 검색어 정제 중...")
@@ -243,8 +274,8 @@ def rag_retriever_node(state: AgentState):
 def rag_search_node(state: AgentState):
     print("\n🔍 [RAG Search] 빅쿼리 고성능 하이브리드 검색 및 권한(ACL) 실시간 검증 가동...")
     from rag_node import hybrid_search_bq
-    
-    user_input = state["messages"][-1].content
+
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "employee_all@coway.com")
     
     context_text, top_dept_code = hybrid_search_bq(user_input, user_email)
@@ -257,7 +288,7 @@ def rag_search_node(state: AgentState):
 
 def reasoner_node(state: AgentState):
     print("🧠 [Reasoner] 제미나이 3.5 싱킹 엔진 가동 및 최종 추론 답변 생성 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     docs = state["retrieved_docs"]
     
     extracted_sources = []
@@ -323,7 +354,8 @@ def reasoner_node(state: AgentState):
     - 답변 본문 인용 마킹([1], [2] 등)이 완료된 후, 절대로 사용자 화면에 "주요 출처"나 "🎯 주요 출처" 같은 텍스트 리스트를 직접 출력하지 마십시오. (하단 카드 섹션과 중복되어 UI가 지저분해집니다.)
     - 대신, 답변 맨 마지막 줄(추천 질문 구분자 |||SUGGESTIONS||| 바로 위)에 반드시 아래의 정확한 JSON 출처 명세 포맷을 [SOURCE_REPORTS] 태그와 함께 한 줄의 순수 JSON 문자열로 사출하십시오. 앞뒤에 백틱기호는 엄격히 금지합니다.
     - doc_name 필드에는 파일명이나 문서의 진짜 명칭(예: "[인사팀] 코웨이 복리후생 규정_2025.09.01.pdf")을 입력하십시오.
-    
+    - ★ [출처 필터링 엄수] [SOURCE_REPORTS]에는 반드시 본문에서 실제로 인용한([1], [2] 등 마킹) 문서만 포함하세요. 검색은 됐으나 본문에 인용하지 않은 문서는 절대 포함하지 마세요. 관련 내용을 찾지 못해 "찾을 수 없습니다"라고 답한 경우에는 [SOURCE_REPORTS] 자체를 출력하지 마세요.
+
     포맷 규격:
     [SOURCE_REPORTS] [{{"doc_name": "실제 문서 이름 1", "doc_url": "해당 문서의 구글드라이브 URL"}}, {{"doc_name": "실제 문서 이름 2", "doc_url": "해당 문서의 구글드라이브 URL"}}]
 
@@ -359,7 +391,7 @@ def reasoner_node(state: AgentState):
 
 def general_node(state: AgentState):
     print("👋 [GENERAL] 일상 대화 처리 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     
     prompt = f"""
     당신은 코웨이 임직원을 위한 사내 전사 AI 챗봇입니다.
@@ -372,7 +404,7 @@ def general_node(state: AgentState):
 
 def bq_node(state: AgentState):
     print("📊 [BQ] 제미나이 3.5 기반 자율형 다차원 데이터 애널리스트 모드 기동...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     system_message = rf"""
@@ -557,7 +589,7 @@ def bq_corrector_node(state: AgentState):
 
 def email_write_node(state: AgentState):
     print("✉️ [EMAIL_WRITE] 제미나이 3.5가 이메일 초안 작성을 준비합니다...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     prompt = f"""당신은 코웨이 임직원을 돕는 전문 비서입니다.
@@ -581,7 +613,7 @@ def email_write_node(state: AgentState):
 
 def email_read_node(state: AgentState):
     print("📧 [EMAIL_READ] 안읽은 메일을 수신하여 브리핑 정제 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     email_text = ""
@@ -621,7 +653,7 @@ def email_read_node(state: AgentState):
 
 def calendar_read_node(state: AgentState):
     print("📅 [CALENDAR_READ] 구글 캘린더 일정을 조회하는 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     schedule_text = ""
@@ -655,7 +687,7 @@ def calendar_read_node(state: AgentState):
 
 def calendar_write_node(state: AgentState):
     print("📅 [CALENDAR_WRITE] 구조화된 일정 데이터 추출 및 추가 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     now = datetime.datetime.now()
@@ -664,7 +696,13 @@ def calendar_write_node(state: AgentState):
     extract_prompt = f"""
     현재 날짜: {today_str}
     사용자의 요청에서 추가할 구글 캘린더 일정 정보를 정확히 추출하여 오직 객체로 반환하세요.
-    날짜가 명시되지 않았다면 오늘 날짜로, 종료시간이 없다면 시작시간으로부터 1시간 뒤로 설정하세요.
+
+    [시간 해석 규칙]
+    - 오전/오후 구분 없이 표기된 시간은 업무시간(09:00~18:00) 기준으로 해석하세요.
+      예: "1시" → 13:00, "2시" → 14:00, "3시" → 15:00, "9시" → 09:00, "10시" → 10:00
+    - "내일", "모레" 등 상대적 날짜 표현을 현재 날짜 기준으로 정확히 계산하세요.
+    - 날짜가 명시되지 않았다면 오늘 날짜로, 종료시간이 없다면 시작시간으로부터 1시간 뒤로 설정하세요.
+
     사용자 요청: {user_input}
     """
     try:
@@ -700,7 +738,7 @@ def calendar_write_node(state: AgentState):
 
 def task_read_node(state: AgentState):
     print("📝 [TASK_READ] 구글 Tasks에서 미완료 할 일 목록을 가져오는 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     try:
@@ -728,7 +766,7 @@ def task_read_node(state: AgentState):
 
 def task_write_node(state: AgentState):
     print("📝 [TASK_WRITE] 단기 대화 맥락 분석 및 구글 할 일 추가 중...")
-    user_input = state["messages"][-1].content
+    user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
     
     now = datetime.datetime.now()
@@ -764,15 +802,43 @@ def task_write_node(state: AgentState):
         print(f"⚠️ Tasks 등록 에러: {str(e)}")
         return {"messages": [AIMessage(content=f"⚠️ 할 일 등록 중 오류가 발생했습니다: {str(e)}")]}
 
+def dispatcher_node(state: AgentState):
+    """pending_intents 큐에서 다음 인텐트를 꺼내 current_intent에 세팅"""
+    pending = list(state.get("pending_intents") or [])
+    if pending:
+        next_intent = pending[0]
+        remaining = pending[1:]
+        print(f"🔄 [Dispatcher] 다음 작업 실행: {next_intent} (남은 작업 {len(remaining)}개)")
+        return {"current_intent": next_intent, "pending_intents": remaining}
+    print("🏁 [Dispatcher] 모든 작업 완료 → Aggregator로 이동")
+    return {"current_intent": "__DONE__"}
+
+def aggregator_node(state: AgentState):
+    """복수 작업 응답을 하나의 메시지로 통합"""
+    messages = state["messages"]
+    ai_responses = []
+    for msg in reversed(messages):
+        if hasattr(msg, 'type') and msg.type == "human":
+            break
+        if hasattr(msg, 'type') and msg.type == "ai":
+            ai_responses.insert(0, msg.content)
+
+    if len(ai_responses) <= 1:
+        return {}  # 단일 응답이면 그대로 통과
+
+    combined = "\n\n---\n\n".join(ai_responses)
+    print(f"📋 [Aggregator] {len(ai_responses)}개 응답 통합 완료")
+    return {"messages": [AIMessage(content=combined)]}
+
 # ---------------------------------------------------------------------
 # 🚦 LangGraph 조건부 에지 라우터 매립 구역
 # ---------------------------------------------------------------------
-def route_after_bq(state: AgentState) -> Literal["END", "BQ_Corrector_Node"]:
+def route_after_bq(state: AgentState) -> Literal["Dispatcher", "BQ_Corrector_Node"]:
     if state.get("bq_error_log"):
         if state.get("bq_retry_count", 0) < 2:
             return "BQ_Corrector_Node"
         print("🚨 [BQ 패닉] 2회 연속 자율 복구 실패. 안전 장벽을 가동합니다.")
-    return "END"
+    return "Dispatcher"
 
 # ==========================================
 # LangGraph 정밀 네트워크 인프라 토폴로지 연결
@@ -780,11 +846,13 @@ def route_after_bq(state: AgentState) -> Literal["END", "BQ_Corrector_Node"]:
 workflow = StateGraph(AgentState)
 
 workflow.add_node("Supervisor", supervisor_node)
+workflow.add_node("Dispatcher", dispatcher_node)
+workflow.add_node("Aggregator_Node", aggregator_node)
 workflow.add_node("RAG_Search_Node", rag_search_node)
 workflow.add_node("Reasoner", reasoner_node)
-workflow.add_node("GENERAL_Node", general_node)  
-workflow.add_node("BQ_Node", bq_node)            
-workflow.add_node("BQ_Corrector_Node", bq_corrector_node) 
+workflow.add_node("GENERAL_Node", general_node)
+workflow.add_node("BQ_Node", bq_node)
+workflow.add_node("BQ_Corrector_Node", bq_corrector_node)
 workflow.add_node("EMAIL_WRITE_Node", email_write_node)
 workflow.add_node("EMAIL_READ_Node", email_read_node)
 workflow.add_node("CALENDAR_WRITE_Node", calendar_write_node)
@@ -792,25 +860,30 @@ workflow.add_node("CALENDAR_READ_Node", calendar_read_node)
 workflow.add_node("TASK_WRITE_Node", task_write_node)
 workflow.add_node("TASK_READ_Node", task_read_node)
 
+
+# START → Supervisor → 첫 번째 액션 노드 (current_intent 기준 직접 라우팅)
+# Dispatcher는 각 액션 노드 완료 후에만 호출 (pending_intents 처리용)
 workflow.add_edge(START, "Supervisor")
 
+INTENT_NODE_MAP = {
+    "RAG": "RAG_Search_Node",
+    "BQ": "BQ_Node",
+    "GENERAL": "GENERAL_Node",
+    "EMAIL_WRITE": "EMAIL_WRITE_Node",
+    "EMAIL_READ": "EMAIL_READ_Node",
+    "CALENDAR_WRITE": "CALENDAR_WRITE_Node",
+    "CALENDAR_READ": "CALENDAR_READ_Node",
+    "TASK_WRITE": "TASK_WRITE_Node",
+    "TASK_READ": "TASK_READ_Node",
+}
+
 def route_after_supervisor(state: AgentState) -> Literal[
-    "RAG_Search_Node", "BQ_Node", "GENERAL_Node", 
-    "EMAIL_WRITE_Node", "EMAIL_READ_Node", 
+    "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
+    "EMAIL_WRITE_Node", "EMAIL_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node",
-    "TASK_WRITE_Node", "TASK_READ_Node", "END"
+    "TASK_WRITE_Node", "TASK_READ_Node", "Aggregator_Node"
 ]:
-    intent = state["current_intent"]
-    if intent == "RAG": return "RAG_Search_Node"
-    elif intent == "BQ": return "BQ_Node"
-    elif intent == "GENERAL": return "GENERAL_Node"
-    elif intent == "EMAIL_WRITE": return "EMAIL_WRITE_Node"
-    elif intent == "EMAIL_READ": return "EMAIL_READ_Node"
-    elif intent == "CALENDAR_WRITE": return "CALENDAR_WRITE_Node"
-    elif intent == "CALENDAR_READ": return "CALENDAR_READ_Node"
-    elif intent == "TASK_WRITE": return "TASK_WRITE_Node"
-    elif intent == "TASK_READ": return "TASK_READ_Node"
-    return "END" 
+    return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
 
 workflow.add_conditional_edges(
     "Supervisor",
@@ -825,30 +898,62 @@ workflow.add_conditional_edges(
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
         "TASK_WRITE_Node": "TASK_WRITE_Node",
         "TASK_READ_Node": "TASK_READ_Node",
-        "END": END
+        "Aggregator_Node": "Aggregator_Node",
     }
 )
 
+# 액션 노드 완료 후 Dispatcher: pending_intents가 남아있으면 다음 노드로, 없으면 Aggregator로
+def route_after_dispatcher(state: AgentState) -> Literal[
+    "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
+    "EMAIL_WRITE_Node", "EMAIL_READ_Node",
+    "CALENDAR_WRITE_Node", "CALENDAR_READ_Node",
+    "TASK_WRITE_Node", "TASK_READ_Node", "Aggregator_Node"
+]:
+    return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
+
+workflow.add_conditional_edges(
+    "Dispatcher",
+    route_after_dispatcher,
+    {
+        "RAG_Search_Node": "RAG_Search_Node",
+        "BQ_Node": "BQ_Node",
+        "GENERAL_Node": "GENERAL_Node",
+        "EMAIL_WRITE_Node": "EMAIL_WRITE_Node",
+        "EMAIL_READ_Node": "EMAIL_READ_Node",
+        "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
+        "CALENDAR_READ_Node": "CALENDAR_READ_Node",
+        "TASK_WRITE_Node": "TASK_WRITE_Node",
+        "TASK_READ_Node": "TASK_READ_Node",
+        "Aggregator_Node": "Aggregator_Node",
+    }
+)
+
+# BQ 재시도 루프: 실패 시 Corrector, 성공 시 Dispatcher로 복귀
 workflow.add_conditional_edges(
     "BQ_Node",
     route_after_bq,
     {
-        "END": END,
+        "Dispatcher": "Dispatcher",
         "BQ_Corrector_Node": "BQ_Corrector_Node"
     }
 )
-
 workflow.add_edge("BQ_Corrector_Node", "BQ_Node")
 
+# RAG 체인: Search → Reasoner → Dispatcher
 workflow.add_edge("RAG_Search_Node", "Reasoner")
-workflow.add_edge("Reasoner", END)
-workflow.add_edge("GENERAL_Node", END)
-workflow.add_edge("EMAIL_WRITE_Node", END)
-workflow.add_edge("EMAIL_READ_Node", END)
-workflow.add_edge("CALENDAR_WRITE_Node", END)
-workflow.add_edge("CALENDAR_READ_Node", END)
-workflow.add_edge("TASK_WRITE_Node", END)
-workflow.add_edge("TASK_READ_Node", END)
+workflow.add_edge("Reasoner", "Dispatcher")
+
+# 단일 액션 노드 완료 후 Dispatcher로 복귀 (다음 인텐트 처리 또는 종료 판단)
+workflow.add_edge("GENERAL_Node", "Dispatcher")
+workflow.add_edge("EMAIL_WRITE_Node", "Dispatcher")
+workflow.add_edge("EMAIL_READ_Node", "Dispatcher")
+workflow.add_edge("CALENDAR_WRITE_Node", "Dispatcher")
+workflow.add_edge("CALENDAR_READ_Node", "Dispatcher")
+workflow.add_edge("TASK_WRITE_Node", "Dispatcher")
+workflow.add_edge("TASK_READ_Node", "Dispatcher")
+
+# Aggregator → END
+workflow.add_edge("Aggregator_Node", END)
 
 # ==========================================================
 # 💡 파이어스토어 서랍장 저장소 최종 빌드 연동 (v8 완전 패키징)
