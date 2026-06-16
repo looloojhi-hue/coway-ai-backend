@@ -325,108 +325,67 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
             synchronized_link_list = [{"title": s.get("doc_name", "바로가기"), "url": s.get("links", "#")} for s in source_results if s.get("links")]
             extracted_links = json.dumps(synchronized_link_list, ensure_ascii=False)
 
-    # 🌟 [🚨 Phase 4.5 긴급 복구 - 파이어스토어 기반 3x2 격자 히스토리 동기화 및 6슬롯 Rolling 백업 엔진]
-    # 누락되었던 히스토리 적재 레일을 완벽히 복원하여 메인 화면 사이드바와 연동 완료시킵니다.
-    try:
-        db_fs_local = firestore.Client(project=PROJECT_ID)
-        history_ref = db_fs_local.collection("user_history").document(user_email).collection("sessions").document(session_id)
-        
-        # 최신 질문 명칭을 따 대화방 타이틀 실시간 자동 갱신
-        room_title = payload.current[:18] + "..." if len(payload.current) > 18 else payload.current
-        history_ref.set({
-            "sessionId": session_id,
-            "title": room_title,
-            "last_query": payload.current,
-            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "is_pinned": False
-        }, merge=True)
-        
-        # 6슬롯 초과분 자율 롤링 삭제 매커니즘 (즐겨찾기 핀 고정 방은 영구 보존)
-        sessions_ref = db_fs_local.collection("user_history").document(user_email).collection("sessions")
-        active_sessions = [d for d in sessions_ref.order_by("updated_at", direction=firestore.Query.DESCENDING).stream()]
-        if len(active_sessions) > 6:
-            for old_sess in active_sessions[6:]:
-                if not old_sess.to_dict().get("is_pinned", False):
-                    sessions_ref.document(old_sess.id).delete()
-        print(f"📊 [Firestore] 3x2 격자 6슬롯 매트릭스 롤링 백업 적재 완공! (세션: {session_id})")
-    except Exception as fs_err:
-        print(f"⚠️ [Firestore] 히스토리 매트릭스 백업 중 예외 스킵 (RPA 방어): {fs_err}")
-
-    # 최종 취합 가방 패키징 토스
-    return {
-        "summary": { "summaryText": clean_answer_body },
-        "chartData": parsed_chart_data, 
-        "results": source_results,
-        "links": extracted_links,
-        "suggestions": suggestions_payload,
-        "sessionId": session_id
-    }
-
-    # ====================================================================
-    # 💾 [파이어스토어 무결성 가방 적재 벨트 라인]
-    # ====================================================================
+    # 파이어스토어 히스토리 적재 — coway_chat_sessions 컬렉션 (history/list, history/detail API가 읽는 경로)
     try:
         doc_ref = db_fs.collection(COLLECTION_NAME).document(session_id)
         doc = doc_ref.get()
-        
-        # 🎯 [이중 캔버스 유령 흰 박스 및 찌그러짐 버그 최종 타격 격살]
-        # 금고 데이터베이스 장부에는 찌꺼기 문자열이 100% 소멸한 깨끗한 clean_answer_body만 엄격히 격리 적재!
+
+        short_title = payload.current[:25] + "..." if len(payload.current) > 25 else payload.current
         new_history_payload = [
             {
-                "role": "user", 
-                "content": payload.current, 
+                "role": "user",
+                "content": payload.current,
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
             },
             {
-                "role": "assistant", 
-                "content": clean_answer_body, 
+                "role": "assistant",
+                "content": clean_answer_body,
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "results": source_results,   
-                "links": extracted_links,     
-                "chartData": parsed_chart_data 
+                "results": source_results,
+                "links": extracted_links,
+                "chartData": parsed_chart_data
             }
         ]
-        
+
         if doc.exists:
             doc_ref.update({
+                "title": short_title,
+                "badge_type": intent,
                 "messages": firestore.ArrayUnion(new_history_payload),
                 "updated_at": firestore.SERVER_TIMESTAMP
             })
         else:
+            # 6슬롯 초과 시 가장 오래된 비핀 세션 삭제
             user_sessions = db_fs.collection(COLLECTION_NAME)\
                                  .where("user_email", "==", user_email)\
                                  .order_by("updated_at", direction=firestore.Query.DESCENDING)\
                                  .get()
-            
             if len(user_sessions) >= 6:
                 for old_doc in reversed(user_sessions):
-                    old_data = old_doc.to_dict()
-                    if not old_data.get("is_pinned", False):
+                    if not old_doc.to_dict().get("is_pinned", False):
                         db_fs.collection(COLLECTION_NAME).document(old_doc.id).delete()
-                        print(f"🗑️ [선입선출 청소] 6개 초과로 인해 삭제된 구형 룸: {old_doc.id}")
+                        print(f"🗑️ [선입선출 청소] 6개 초과 삭제: {old_doc.id}")
                         break
-            
-            short_title = payload.current[:25] + "..." if len(payload.current) > 25 else payload.current
-            
+
             doc_ref.set({
                 "user_email": user_email,
                 "title": short_title,
-                "badge_type": intent,  
+                "badge_type": intent,
                 "is_pinned": False,
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "messages": new_history_payload
             })
-            print(f"🧱 [구조체 가방 세션 적재 완료] ➔ {session_id}")
-            
+        print(f"📊 [Firestore] 히스토리 적재 완료 (세션: {session_id})")
     except Exception as fs_err:
-        print(f"⚠️ [파이어스토어 백업 실패 가드 격발]: {fs_err}")
+        print(f"⚠️ [Firestore] 히스토리 적재 실패: {fs_err}")
 
-    # 완전히 분리 분할 정돈된 프리미엄 API 응답 포맷 배달 확정 사출
     return {
         "summary": { "summaryText": clean_answer_body },
-        "chartData": parsed_chart_data, 
+        "chartData": parsed_chart_data,
         "results": source_results,
-        "links": extracted_links
+        "links": extracted_links,
+        "suggestions": suggestions_payload,
+        "sessionId": session_id
     }
 
 # ====================================================================
