@@ -454,6 +454,10 @@ def bq_node(state: AgentState):
           - fuel_amt (유류비), toll_amt (통행료), own_car_fuel_amt (소유차량 유류비), own_car_toll_amt (소유차량 통행료), own_car_parking_amt (소요차량 주차)
           - roaming_amt (해외로밍비), visa_passport_amt (비자여권발급비), insurance_amt (여행자보험료), etc_amt (기타금액), parking_amt (주차비)
           - air_card_num (항공카드번호), ship_boarding_amt (선박승선비), ship_ferry_amt (선박도선비)
+        * 🚨 [STRING 타입 필수 캐스팅] 위 금액 컬럼(_amt로 끝나는 모든 컬럼)은 BigQuery에 STRING 타입으로 저장됩니다.
+          SUM / AVG / MAX / MIN 등 수치 집계 시 반드시 SAFE_CAST(컬럼명 AS FLOAT64)를 적용하세요.
+          예: SUM(SAFE_CAST(actual_amt AS FLOAT64)), SUM(SAFE_CAST(lodge_amt AS FLOAT64))
+          절대로 SUM(actual_amt) 처럼 직접 집계하지 마세요 — 반드시 SAFE_CAST 래핑 필수.
 
     📁 DATASET 2: hrga_cost_data (총무팀 집행비용 데이터세트)
       - TABLE ID: budget_master (연간 예산 계획 테이블)
@@ -493,13 +497,18 @@ def bq_node(state: AgentState):
     출력은 마크다운 코드블록을 포함하여 오직 순수 SQL문만 전달하세요.
     """
     
-    sql_response = ai_client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[{"role": "system", "parts": [{"text": system_message}]}, {"role": "user", "parts": [{"text": user_input}]}]
-    ).text
-    
-    generated_sql = sql_response.replace("```sql", "").replace("```", "").strip()
-    print(f"🔍 [BQ Generated SQL]:\n{generated_sql}")
+    # BQ_Corrector가 이미 SQL을 수정한 경우 재생성하지 않고 교정 SQL 직접 사용
+    corrected_sql = state.get("refined_query", "")
+    if corrected_sql and corrected_sql not in ("", "SQL 실행 실패"):
+        generated_sql = corrected_sql.replace("```sql", "").replace("```", "").strip()
+        print(f"♻️ [BQ] 교정된 SQL 재사용 (재시도 #{state.get('bq_retry_count', 0)}):\n{generated_sql}")
+    else:
+        sql_response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[{"role": "system", "parts": [{"text": system_message}]}, {"role": "user", "parts": [{"text": user_input}]}]
+        ).text
+        generated_sql = sql_response.replace("```sql", "").replace("```", "").strip()
+        print(f"🔍 [BQ Generated SQL]:\n{generated_sql}")
     print(f"🔍 [BQ] 사용자({user_email})의 권한 범위 내에서 데이터 탐색 및 SQL 실행 중...")
     
     try:
@@ -579,8 +588,14 @@ def bq_corrector_node(state: AgentState):
     [빅쿼리가 뿜어낸 오피셜 에러 메시지]
     "{error_msg}"
 
+    [스키마 핵심 정보 - 교정 시 반드시 참고]
+    - travel_master_db의 금액 컬럼(_amt로 끝나는 컬럼: actual_amt, planned_amt, lodge_amt, meal_amt, daily_allowance, ktx_amt, flight_amt 등)은 모두 STRING 타입으로 저장됨.
+      → SUM/AVG/MAX/MIN 집계 시 반드시 SAFE_CAST(컬럼명 AS FLOAT64) 래핑 필수.
+      → 예: SUM(SAFE_CAST(actual_amt AS FLOAT64))
+    - budget_raw의 amount 컬럼도 STRING 타입 → SUM(CAST(amount AS INT64)) 또는 SUM(SAFE_CAST(amount AS FLOAT64))
+
     [교정 수선 명령]
-    위 에러 로그를 천재적으로 분석하여, 컬럼명 오타, GROUP BY 누락, 혹은 잘못된 데이터세트 매핑 등 에러의 원인을 완전히 제거한 '완벽하게 수정된 표준 BigQuery SQL'을 재창조하세요.
+    위 에러 로그를 분석하여 에러의 원인을 완전히 제거한 '완벽하게 수정된 표준 BigQuery SQL'을 재창조하세요.
     앞뒤에 ```sql 같은 코드블록 기호는 일절 제외하고 오직 순수 교정 SQL문만 사출하세요.
     """
     response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
