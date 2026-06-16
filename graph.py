@@ -545,7 +545,7 @@ def bq_node(state: AgentState):
                 "조건을 변경하여 다시 질문해주시면 재조회해드리겠습니다."
             )
             return {
-                "messages": [AIMessage(content=empty_report + f"\n\n---\n<details><summary>💡 디버그: AI가 실행한 SQL 보기</summary>\n\n```sql\n{generated_sql}\n```\n</details>")],
+                "messages": [AIMessage(content=empty_report + f"\n\n---\n<details><summary>AI가 실행한 SQL 보기</summary>\n\n```sql\n{generated_sql}\n```\n</details>")],
                 "bq_error_log": "",
                 "refined_query": ""
             }
@@ -553,24 +553,46 @@ def bq_node(state: AgentState):
         summary_prompt = f"""
         당신은 코웨이 경영진의 의사결정을 돕는 '수석 데이터 애널리스트 AI'입니다.
         데이터베이스에서 추출된 날 것의 데이터(Raw JSON)를 바탕으로 비즈니스 브리핑을 작성하세요.
-        ★ 절대 규칙: 아래 데이터 JSON에 실제로 존재하는 수치만 사용하세요. 데이터에 없는 수치, 비율, 금액을 추측하거나 지어내는 것은 엄격히 금지합니다.
+        ★ 절대 규칙: 아래 데이터 JSON에 실제로 존재하는 수치만 사용하세요. 없는 수치·비율·금액을 추측하거나 지어내는 것은 엄격히 금지합니다.
 
-        [보고서 작성 지침]
-        1. 🎯 Executive Summary 결론을 최상단 2~3줄로 무조건 박고 시작하세요.
-        2. 부서별 증감액, 주요 쏠림 비중 분석 원인 분석 스토리텔링을 가동하세요.
-        3. 📊 가독성 붕괴 방지를 위해 마크다운 표(Table)는 절대 금지하며, 개조식 불릿 포인트 구조화만 사출하세요.
-        4. 수치 단위를 인간 가독성에 맞춰 깔끔하게 축약 변환하세요. (예: "약 43억 7,540만 원")
+        [보고서 작성 순서 — 반드시 이 순서대로]
+        1. 🎯 Executive Summary (전체 종합 현황 먼저)
+           - 총 출장건수, 총 출장자(연인원), 총 실제사용금액을 반드시 첫 줄에 명시하세요.
+           - 국내/해외 건수와 비용 비율을 한 줄로 요약하세요.
+           - 전체 데이터에서 가장 주목할 특이사항 1~2가지를 압축하여 마무리하세요.
+        2. 해외 출장 분석 (해외 데이터가 있을 때)
+           - 본부별 집행 규모 TOP 순위, 출장 목적지 집중 지역, 주요 출장 목적 분류
+        3. 국내 출장 분석 (국내 데이터가 있을 때)
+           - 본부별 집행 규모, 출장 빈도 TOP 순위, 지출 패턴 특이사항
+        4. 비용 구조 분석 (항목별: 교통비·숙박비·식비·일비 비중)
+        5. 특이사항 (아래 임원 제외 규칙 적용)
 
-        [🚨 다차원 멀티 차트 Generative UI 사출 조항]
-        - 현재 빅쿼리 원본 조회 데이터의 품질 상태는 **[{data_status_guard}]** 입니다.
-        - 상태가 [NORMAL] 일 때만, 보고서 맨 마지막 줄에 아래의 **[CHART_DATA]** 고유 태그와 함께 명세서를 작성하되, 필요하다면 답변 하나에 아래 태그를 **여러 번 반복해서 복수 개의 차트를 무제한 사출**할 수 있습니다.
-        - 복합 계열(예: 당월 vs 전월 비교)을 표현할 때는 `series` 배열 내에 객체를 여러 개 배치하십시오. 앞뒤에 백틱(```) 기호는 엄격히 금지합니다.
+        [임원 특이사항 제외 규칙]
+        - emp_group 컬럼에 '임원', '고문', '의장', '대표이사', '사외이사', '상임감사' 등이 포함된 인원은 비용이 높더라도 특이사항으로 분류하지 마세요.
+        - 임원은 비즈니스석 탑승·빈번한 해외 출장이 구조적으로 예정된 직급이므로 일반 사원 기준의 이상값 탐지 대상에서 제외합니다.
+        - 특이사항 분류 시 반드시 emp_name(출장자 이름)을 기준으로 판단하세요. hq_name(본부명)을 사람 이름으로 혼용하지 마세요.
+        - 데이터에 emp_name이 없을 경우, 특이사항 섹션을 생략하세요.
 
-        포맷 규격 A (단일 데이터 계열 차트가 필요할 때):
-        [CHART_DATA] {{"type": "bar", "title": "부서별 집행 총액", "categories": ["IT지원팀", "총무팀"], "series": [{{"name": "집행액", "data": [5000000, 3200000]}}]}}
+        [보고서 포맷 규칙]
+        - 마크다운 표(Table)는 절대 금지, 개조식 불릿 포인트만 사용하세요.
+        - 수치는 인간 가독성에 맞춰 축약하세요. (예: "약 3억 2,043만 원")
 
-        포맷 규격 B (다차원/다중 비교 데이터 계열 차트가 필요할 때):
-        [CHART_DATA] {{"type": "bar", "title": "전월 대비 비용 비교 현황", "categories": ["소모품비", "여비교통비"], "series": [{{"name": "4월 집행액", "data": [1200000, 850000]}}, {{"name": "5월 집행액", "data": [1500000, 900000]}}]}}
+        [다차원 멀티 차트 필수 사출 — {data_status_guard} 상태]
+        - 상태가 [NORMAL]일 때, 데이터에서 의미 있는 모든 지표를 차트로 시각화하세요.
+        - 차트는 최소 3개 이상 사출하세요. 데이터가 풍부할수록 더 많이 그려도 됩니다.
+        - 출장 데이터 기준 권장 차트 구성:
+          ① 본부별 실제사용금액 비교 (bar)
+          ② 국내 vs 해외 출장건수 비교 (bar 또는 각 본부별 국내/해외 계열 구분)
+          ③ 비용 항목별 구성 비율 (교통비/숙박비/식비/일비) (bar)
+          ④ 출장 빈도 TOP 본부 (trip_count 기준 bar)
+          - 데이터에 destination, purpose_category 등 추가 차원이 있으면 추가 차트를 더 그리세요.
+        - 각 [CHART_DATA] 태그는 보고서 본문 마지막 줄들에 연속으로 사출하세요. 앞뒤 백틱(```) 기호 금지.
+
+        포맷 규격 A:
+        [CHART_DATA] {{"type": "bar", "title": "본부별 출장 실제사용금액", "categories": ["3사업본부", "2연구소"], "series": [{{"name": "실제사용금액", "data": [320430000, 227470000]}}]}}
+
+        포맷 규격 B (다중 계열):
+        [CHART_DATA] {{"type": "bar", "title": "본부별 국내/해외 출장건수", "categories": ["고객/품질본부", "1사업본부"], "series": [{{"name": "국내", "data": [101, 65]}}, {{"name": "해외", "data": [5, 3]}}]}}
 
         데이터 JSON: {json.dumps(query_results, default=str)}
         사용자가 던진 실제 질문: {user_input}
@@ -579,7 +601,7 @@ def bq_node(state: AgentState):
         print(f"✅ [BQ] 데이터 품질 검증 완료 (상태: {data_status_guard}) ➔ 최종 답변 정제 완공!")
         
         return {
-            "messages": [AIMessage(content=final_report + f"\n\n---\n<details><summary>💡 디버그: AI가 실행한 SQL 보기</summary>\n\n```sql\n{generated_sql}\n```\n</details>")],
+            "messages": [AIMessage(content=final_report + f"\n\n---\n<details><summary>AI가 실행한 SQL 보기</summary>\n\n```sql\n{generated_sql}\n```\n</details>")],
             "bq_error_log": "",
             "refined_query": ""
         }
