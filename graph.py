@@ -440,13 +440,14 @@ def bq_node(state: AgentState):
     📁 DATASET 1: hrga_travel_data (전사 출장현황 데이터세트)
       - TABLE ID: travel_master_db (출장 마스터 테이블)
         * 🚨 [출장 집계 핵심 비즈니스 규칙]:
-          - '출장 건수'를 카운팅할 때는 하나의 출장번호에 여러 명이 동행할 수 있으므로 반드시 COUNT(DISTINCT trip_id)를 사용하세요.
-          - '출장자 인원수'를 카운팅할 때는 출장자 사번 기준인 COUNT(emp_id) 또는 COUNT(DISTINCT emp_id)를 사용하세요.
+          - '출장 건수': 하나의 출장번호에 여러 명이 동행할 수 있으므로 반드시 COUNT(DISTINCT trip_id) 사용.
+          - '총 출장자(연인원)': 동일인이 여러 번 출장 시 각각 카운팅하는 COUNT(emp_id) 사용. (COUNT(DISTINCT emp_id)는 중복 제거된 고유 인원수이므로 혼용 금지)
+          - '고유 출장자 수': 사용자가 "몇 명이 출장을 다녀왔나" 같이 중복 제거를 원할 때만 COUNT(DISTINCT emp_id) 사용.
         * 물리 컬럼 명세:
           - trip_id (출장번호), emp_id (출장자 사번), emp_name (출장자 이름)
           - job_title (직책), emp_group (사원 그룹)
           - hq_name (본부 명칭), office_name (실 명칭), dept_name (부서(팀) 명칭) ➔ 🚨 출장 데이터 소속 조회 시에는 이 컬럼명 체계를 고수하세요.
-          - company_code (회사코드), trip_type (출장구분), purpose_category (출장목적구분), purpose_detail (출장목적), destination (출장지)
+          - company_code (회사코드), trip_type (출장구분 — 예: 국내/해외 구분값 존재), purpose_category (출장목적구분), purpose_detail (출장목적), destination (출장지)
           - client_code (거래선코드), client_name (거래선명), expense_type (체제비유형), duration (출장기간)
           - start_date (시작일), end_date (종료일), doc_status (결재문서상태), appr_status (결재상태), includes_weekend (주말포함여부)
         * 🚨 [doc_status 필터 금지] doc_status, appr_status 컬럼의 유효 값을 정확히 알 수 없으므로, 사용자가 명시적으로 "완료된 출장만", "승인된 건만" 등을 요청하지 않는 한 절대로 WHERE doc_status = ... 조건을 추가하지 마세요. 조건 없이 전체 데이터를 조회하세요.
@@ -455,10 +456,20 @@ def bq_node(state: AgentState):
           - fuel_amt (유류비), toll_amt (통행료), own_car_fuel_amt (소유차량 유류비), own_car_toll_amt (소유차량 통행료), own_car_parking_amt (소요차량 주차)
           - roaming_amt (해외로밍비), visa_passport_amt (비자여권발급비), insurance_amt (여행자보험료), etc_amt (기타금액), parking_amt (주차비)
           - air_card_num (항공카드번호), ship_boarding_amt (선박승선비), ship_ferry_amt (선박도선비)
-        * 🚨 [STRING 타입 필수 캐스팅] 위 금액 컬럼(_amt로 끝나는 모든 컬럼)은 BigQuery에 STRING 타입으로 저장됩니다.
-          SUM / AVG / MAX / MIN 등 수치 집계 시 반드시 SAFE_CAST(컬럼명 AS FLOAT64)를 적용하세요.
-          예: SUM(SAFE_CAST(actual_amt AS FLOAT64)), SUM(SAFE_CAST(lodge_amt AS FLOAT64))
-          절대로 SUM(actual_amt) 처럼 직접 집계하지 마세요 — 반드시 SAFE_CAST 래핑 필수.
+        * 🚨 [STRING 타입 + NULL 안전 집계] 금액 컬럼(_amt로 끝나는 모든 컬럼)은 BigQuery에 STRING 타입으로 저장됩니다.
+          ① 단일 컬럼 집계: SUM(SAFE_CAST(actual_amt AS FLOAT64))
+          ② 복수 컬럼 합산: 반드시 각 컬럼에 COALESCE를 씌워 NULL을 0으로 처리하세요.
+             NULL + 숫자 = NULL 이므로 COALESCE 없이 더하면 전체 합이 NULL로 나옵니다.
+             올바른 예: COALESCE(SAFE_CAST(ktx_amt AS FLOAT64), 0) + COALESCE(SAFE_CAST(flight_amt AS FLOAT64), 0) + ...
+        * 🚨 [총 교통비 집계 표준] 교통비는 아래 13개 컬럼을 모두 COALESCE로 합산하세요 (누락 시 결측 발생):
+          transport_other_amt, ktx_amt, flight_amt, public_transport_amt, rent_amt,
+          fuel_amt, toll_amt, own_car_fuel_amt, own_car_toll_amt, own_car_parking_amt,
+          parking_amt, ship_boarding_amt, ship_ferry_amt
+        * 🚨 [출장현황 분석 필수 구성] 사용자가 출장현황 분석을 요청하면 아래 항목을 반드시 포함하세요:
+          ① 전체 현황: 총 출장건수(COUNT DISTINCT trip_id), 총 출장자 연인원(COUNT emp_id), 총 실제사용금액
+          ② 본부별(hq_name) 출장건수·비용 분석
+          ③ trip_type 기준 국내/해외 구분 분석 (GROUP BY trip_type 또는 별도 서브쿼리)
+          ④ 해외출장인 경우: 목적지(destination)별 집중도, 출장목적(purpose_category)별 분류, 본부별 해외출장 빈도
 
     📁 DATASET 2: hrga_cost_data (총무팀 집행비용 데이터세트)
       - TABLE ID: budget_master (연간 예산 계획 테이블)
