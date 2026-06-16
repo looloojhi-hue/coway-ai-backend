@@ -60,6 +60,7 @@ def get_model_armor_headers():
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     current_intent: str
+    top_intent: str          # Supervisor가 최초 분류한 인텐트 — Dispatcher가 덮어써도 보존
     pending_intents: list    # 복수 업무 요청 시 순차 처리 대기 큐
     refined_query: str
     retrieved_docs: str
@@ -188,6 +189,7 @@ def supervisor_node(state: AgentState):
     print(f"✅ [Supervisor] 판단 결과: {intents}")
     return {
         "current_intent": intents[0],
+        "top_intent": intents[0],   # Dispatcher 덮어쓰기와 무관하게 최초 인텐트 보존
         "pending_intents": intents[1:],
         "bq_retry_count": 0,
         "bq_error_log": "",

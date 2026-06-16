@@ -208,6 +208,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
     initial_state = {
         "messages": messages_list,
         "current_intent": "",
+        "top_intent": "",
         "pending_intents": [],
         "refined_query": "",
         "retrieved_docs": "",
@@ -290,7 +291,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
             if s_url and not any(x.get("doc_url") == s_url for x in source_results):
                 source_results.append(s)
 
-    intent = final_state.get("current_intent", "GENERAL")
+    # top_intent: Supervisor 최초 분류값 (Dispatcher가 "__DONE__"으로 덮어쓴 current_intent 대신 사용)
+    intent = final_state.get("top_intent") or final_state.get("current_intent", "GENERAL")
     response_status = "SUCCESS"
 
     if intent == "RAG" and "찾을 수 없습니다" in clean_answer_body:
