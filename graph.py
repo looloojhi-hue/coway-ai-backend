@@ -449,6 +449,7 @@ def bq_node(state: AgentState):
           - company_code (회사코드), trip_type (출장구분), purpose_category (출장목적구분), purpose_detail (출장목적), destination (출장지)
           - client_code (거래선코드), client_name (거래선명), expense_type (체제비유형), duration (출장기간)
           - start_date (시작일), end_date (종료일), doc_status (결재문서상태), appr_status (결재상태), includes_weekend (주말포함여부)
+        * 🚨 [doc_status 필터 금지] doc_status, appr_status 컬럼의 유효 값을 정확히 알 수 없으므로, 사용자가 명시적으로 "완료된 출장만", "승인된 건만" 등을 요청하지 않는 한 절대로 WHERE doc_status = ... 조건을 추가하지 마세요. 조건 없이 전체 데이터를 조회하세요.
           - planned_amt (계획금액), actual_amt (실제사용금액), lodge_amt (숙박비), meal_amt (식비), daily_allowance (일비)
           - transport_other_amt (교통비외), ktx_amt (KTX요금), flight_amt (항공료), public_transport_amt (대중교통), rent_amt (렌트비)
           - fuel_amt (유류비), toll_amt (통행료), own_car_fuel_amt (소유차량 유류비), own_car_toll_amt (소유차량 통행료), own_car_parking_amt (소요차량 주차)
@@ -520,10 +521,28 @@ def bq_node(state: AgentState):
             data_status_guard = "EMPTY"
         elif len(query_results) <= 1:
             data_status_guard = "INSUFFICIENT"
-            
+
+        # EMPTY: LLM에게 분석 요청하지 않고 즉시 안내 메시지 반환 (환각 방지)
+        if data_status_guard == "EMPTY":
+            print(f"⚠️ [BQ] 조회 결과 없음(EMPTY) — 환각 방지를 위해 LLM 분석 스킵")
+            empty_report = (
+                "📭 **조회된 데이터가 없습니다.**\n\n"
+                "요청하신 조건에 해당하는 데이터를 데이터베이스에서 찾을 수 없었습니다.\n\n"
+                "**가능한 원인:**\n"
+                "- 해당 기간에 집행된 데이터가 아직 시스템에 적재되지 않았을 수 있습니다.\n"
+                "- 검색 조건(기간, 부서명 등)을 더 구체적으로 지정해보세요.\n\n"
+                "조건을 변경하여 다시 질문해주시면 재조회해드리겠습니다."
+            )
+            return {
+                "messages": [AIMessage(content=empty_report + f"\n\n---\n<details><summary>💡 디버그: AI가 실행한 SQL 보기</summary>\n\n```sql\n{generated_sql}\n```\n</details>")],
+                "bq_error_log": "",
+                "refined_query": ""
+            }
+
         summary_prompt = f"""
         당신은 코웨이 경영진의 의사결정을 돕는 '수석 데이터 애널리스트 AI'입니다.
         데이터베이스에서 추출된 날 것의 데이터(Raw JSON)를 바탕으로 비즈니스 브리핑을 작성하세요.
+        ★ 절대 규칙: 아래 데이터 JSON에 실제로 존재하는 수치만 사용하세요. 데이터에 없는 수치, 비율, 금액을 추측하거나 지어내는 것은 엄격히 금지합니다.
 
         [보고서 작성 지침]
         1. 🎯 Executive Summary 결론을 최상단 2~3줄로 무조건 박고 시작하세요.
@@ -533,7 +552,6 @@ def bq_node(state: AgentState):
 
         [🚨 다차원 멀티 차트 Generative UI 사출 조항]
         - 현재 빅쿼리 원본 조회 데이터의 품질 상태는 **[{data_status_guard}]** 입니다.
-        - 만약 상태가 [EMPTY] 또는 [INSUFFICIENT] 라면: 차트 데이터 구문을 절대로 뱉지 마세요.
         - 상태가 [NORMAL] 일 때만, 보고서 맨 마지막 줄에 아래의 **[CHART_DATA]** 고유 태그와 함께 명세서를 작성하되, 필요하다면 답변 하나에 아래 태그를 **여러 번 반복해서 복수 개의 차트를 무제한 사출**할 수 있습니다.
         - 복합 계열(예: 당월 vs 전월 비교)을 표현할 때는 `series` 배열 내에 객체를 여러 개 배치하십시오. 앞뒤에 백틱(```) 기호는 엄격히 금지합니다.
 
@@ -555,18 +573,31 @@ def bq_node(state: AgentState):
             "refined_query": ""
         }
     except Exception as e:
-        print(f"❌ [⚠️ CRITICAL-BQ-ERROR] 빅쿼리 노드 런타임 크래시: {str(e)}")
-        
-        fallback_error_report = f"""
-        ⚠️ **BigQuery 데이터 분석 에이전트 런타임 통신 에러**
-        
-        **[GCP 내부 로그]:** `{str(e)}`
-        
-        **[안내]:** 테이블 권한은 정상 통과되었으나 제미나이가 SQL을 빌드하는 도중 문법 혹은 연산자 미스매치가 발생했습니다. 수석 비서가 해당 실시간 에러 로그를 기반으로 인프라 프롬프트를 지속 최적화하겠습니다.
-        """
+        err_str = str(e)
+        print(f"❌ [⚠️ CRITICAL-BQ-ERROR] 빅쿼리 노드 런타임 크래시: {err_str}")
+
+        # Access Denied: 권한 없는 사용자 → LLM 재시도 없이 바로 안내
+        if "Access Denied" in err_str or "403" in err_str or "accessDenied" in err_str:
+            access_denied_report = (
+                "🔒 **데이터 접근 권한이 없습니다.**\n\n"
+                f"요청하신 데이터(`{user_input[:40]}...`)는 접근이 제한된 데이터셋입니다.\n\n"
+                "해당 데이터 분석이 필요하신 경우, **데이터 관리자에게 권한 신청**을 해주세요.\n"
+                "권한 신청 후 재질문해주시면 바로 분석해드리겠습니다."
+            )
+            return {
+                "messages": [AIMessage(content=access_denied_report)],
+                "bq_error_log": "",   # 권한 오류는 SQL 교정 불필요 → 재시도 차단
+                "refined_query": ""
+            }
+
+        fallback_error_report = (
+            f"⚠️ **BigQuery 데이터 분석 중 오류가 발생했습니다.**\n\n"
+            f"**[오류 내용]:** `{err_str[:300]}`\n\n"
+            "잠시 후 다시 시도해주세요."
+        )
         return {
             "messages": [AIMessage(content=fallback_error_report)],
-            "bq_error_log": str(e),
+            "bq_error_log": err_str,
             "refined_query": "SQL 실행 실패"
         }
 
