@@ -72,7 +72,7 @@ class AgentState(TypedDict):
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
-    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, CALENDAR_READ, CALENDAR_WRITE, TASK_READ, TASK_WRITE 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
+    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, CALENDAR_READ, CALENDAR_WRITE, CALENDAR_RSVP, TASK_READ, TASK_WRITE 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
 
 class RefinedQuery(BaseModel):
     query: str = Field(description="명사 위주의 핵심 키워드 조합")
@@ -171,13 +171,16 @@ def supervisor_node(state: AgentState):
     - EMAIL_READ: 이메일 요약, 읽기, 확인 요청
     - CALENDAR_WRITE: 캘린더/일정/스케줄 추가·등록·생성 요청 (예: 내일 오후 3시 미팅 일정 잡아줘)
     - CALENDAR_READ: 캘린더/일정 조회·확인 요청 (예: 오늘 내 미팅 일정 알려줘)
+    - CALENDAR_RSVP: 캘린더 초대 일정의 참석 여부 업데이트 요청 (예: 참석 여부 확인 안한 것들 참석으로 체크해줘, 초대 수락해줘, 미응답 일정 수락)
     - TASK_WRITE: 할일·할 일·해야 할 일·테스크·태스크·투두·TODO·to-do 등록·추가 요청
     - TASK_READ: 할일·할 일·해야 할 일·테스크 목록 조회·확인 요청
     [★ 핵심 구분 규칙 - 반드시 준수]
     1. "할일", "할 일", "해야 할 일", "테스크", "태스크", "투두", "to-do", "체크리스트" 키워드 → TASK_WRITE 또는 TASK_READ
        ※ 이 키워드가 포함된 요청은 절대로 CALENDAR로 분류하지 마세요.
-    2. "일정", "캘린더", "calendar", "스케줄", "미팅", "회의", "약속" 키워드 → CALENDAR_WRITE 또는 CALENDAR_READ
-    3. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
+    2. "참석 여부", "참석으로 체크", "참석 확인", "초대 수락", "미응답 일정", "참석 체크" 키워드 → 반드시 CALENDAR_RSVP (CALENDAR_WRITE가 아님)
+    3. "일정 등록", "일정 추가", "일정 잡아", "캘린더 추가", "캘린더 등록" 등 새 이벤트 생성 키워드 → CALENDAR_WRITE
+    4. "일정", "캘린더", "calendar", "스케줄", "미팅", "회의", "약속" 키워드 (생성이 아닌 경우) → CALENDAR_READ
+    5. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
 
     [복수 요청 예시]
     - "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
@@ -939,10 +942,17 @@ def calendar_write_node(state: AgentState):
     print("📅 [CALENDAR_WRITE] 구조화된 일정 데이터 추출 및 추가 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
-    
+
+    # 의도 검증: 새 일정 생성 요청이 아닌 경우 명확화 요청 반환
+    NON_CREATE_KEYWORDS = ["참석 여부", "참석으로", "참석 체크", "초대 수락", "미응답", "참석 확인",
+                           "삭제해", "취소해", "변경해", "수정해", "지워", "없애"]
+    if any(kw in user_input for kw in NON_CREATE_KEYWORDS):
+        print(f"⚠️ [CALENDAR_WRITE] 비생성 요청 감지 → 명확화 유도")
+        return {"messages": [AIMessage(content="📅 죄송합니다. 말씀하신 내용은 새 일정 추가가 아닌 것 같습니다.\n\n저는 현재 다음 캘린더 작업을 지원합니다:\n- **일정 등록/추가**: \"내일 오후 3시 팀 미팅 일정 잡아줘\"\n- **휴가·연차 등록**: \"6월 20일~22일 연차 등록해줘\"\n- **반차 등록**: \"오늘 오후 반차 추가해줘\"\n- **일정 조회**: \"이번 주 일정 알려줘\"\n- **초대 참석 처리**: \"참석 안 한 일정들 수락해줘\"\n\n원하시는 작업을 구체적으로 말씀해 주세요!")]}
+
     now = datetime.datetime.now()
     today_str = f"{now.year}년 {now.month}월 {now.day}일"
-    
+
     extract_prompt = f"""
     현재 날짜: {today_str}
     사용자의 요청에서 추가할 구글 캘린더 일정 정보를 정확히 추출하여 오직 객체로 반환하세요.
@@ -1075,10 +1085,16 @@ def task_write_node(state: AgentState):
     print("📝 [TASK_WRITE] 단기 대화 맥락 분석 및 구글 할 일 추가 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
-    
+
+    # 의도 검증: 새 할일 생성 요청이 아닌 경우 명확화 요청 반환
+    NON_CREATE_TASK_KEYWORDS = ["완료로 표시", "완료 처리", "삭제해", "지워", "없애", "취소해", "수정해", "변경해", "목록 보여", "조회", "확인해줘"]
+    if any(kw in user_input for kw in NON_CREATE_TASK_KEYWORDS):
+        print(f"⚠️ [TASK_WRITE] 비생성 요청 감지 → 명확화 유도")
+        return {"messages": [AIMessage(content="📝 죄송합니다. 말씀하신 내용은 새 할일 추가가 아닌 것 같습니다.\n\n현재 지원하는 할일(Tasks) 기능:\n- **할일 추가**: \"파이썬 교육 자료 정리 할일로 추가해줘\"\n- **마감일 지정**: \"내일까지 보고서 작성 할일 등록해줘\"\n- **할일 목록 조회**: \"내 할일 목록 보여줘\"\n\n원하시는 작업을 구체적으로 말씀해 주세요!")]}
+
     now = datetime.datetime.now()
     today_str = f"{now.year}년 {now.month}월 {now.day}일"
-    
+
     extract_prompt = f"""
     현재 날짜: {today_str}
     사용자 요청: {user_input}
@@ -1108,6 +1124,81 @@ def task_write_node(state: AgentState):
             raise
         print(f"⚠️ Tasks 등록 에러: {str(e)}")
         return {"messages": [AIMessage(content=f"⚠️ 할 일 등록 중 오류가 발생했습니다: {str(e)}")]}
+
+def calendar_rsvp_node(state: AgentState):
+    print("📅 [CALENDAR_RSVP] 미응답 캘린더 초대 일정 참석 처리 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    now = datetime.datetime.now()
+    today_str = f"{now.year}년 {now.month}월 {now.day}일"
+
+    # LLM으로 대상 날짜 범위 파싱
+    try:
+        range_response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=f"""현재 날짜: {today_str}
+사용자 요청에서 조회할 날짜 범위를 추출하세요. 명시 없으면 이번 달 전체로 설정하세요.
+사용자 요청: {user_input}""",
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CalendarReadSchema,
+            ),
+        )
+        r = CalendarReadSchema(**json.loads(range_response.text))
+        time_min = datetime.datetime(r.startYear, r.startMonth, r.startDay, 0, 0, 0).isoformat() + "+09:00"
+        time_max = datetime.datetime(r.endYear, r.endMonth, r.endDay, 23, 59, 59).isoformat() + "+09:00"
+    except Exception:
+        # 기본값: 이번 달 전체
+        time_min = datetime.datetime(now.year, now.month, 1).isoformat() + "+09:00"
+        next_month = (now.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+        time_max = (next_month - datetime.timedelta(seconds=1)).isoformat() + "+09:00"
+
+    try:
+        calendar = get_workspace_service('calendar', 'v3', user_email)
+
+        events_result = calendar.events().list(
+            calendarId='primary',
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy='startTime',
+            maxResults=100
+        ).execute()
+
+        pending_events = []
+        for event in events_result.get('items', []):
+            for attendee in event.get('attendees', []):
+                if attendee.get('self', False) and attendee.get('responseStatus') == 'needsAction':
+                    pending_events.append(event)
+                    break
+
+        if not pending_events:
+            return {"messages": [AIMessage(content="✅ 해당 기간에 참석 여부가 미확인된 초대 일정이 없습니다.")]}
+
+        accepted_names = []
+        for event in pending_events:
+            new_attendees = [
+                dict(a, responseStatus='accepted') if a.get('self', False) else a
+                for a in event.get('attendees', [])
+            ]
+            calendar.events().patch(
+                calendarId='primary',
+                eventId=event['id'],
+                body={'attendees': new_attendees},
+                sendUpdates='none'
+            ).execute()
+            accepted_names.append(event.get('summary', '(제목 없음)'))
+
+        event_list = "\n".join(f"- {name}" for name in accepted_names)
+        return {"messages": [AIMessage(content=f"✅ **{len(accepted_names)}개 일정을 참석으로 처리했습니다!**\n\n{event_list}\n\n모든 일정의 참석 여부가 업데이트되었습니다.")]}
+
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ RSVP 처리 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 참석 처리 중 오류가 발생했습니다: {str(e)}")]}
+
 
 def dispatcher_node(state: AgentState):
     """pending_intents 큐에서 다음 인텐트를 꺼내 current_intent에 세팅"""
@@ -1164,6 +1255,7 @@ workflow.add_node("EMAIL_WRITE_Node", email_write_node)
 workflow.add_node("EMAIL_READ_Node", email_read_node)
 workflow.add_node("CALENDAR_WRITE_Node", calendar_write_node)
 workflow.add_node("CALENDAR_READ_Node", calendar_read_node)
+workflow.add_node("CALENDAR_RSVP_Node", calendar_rsvp_node)
 workflow.add_node("TASK_WRITE_Node", task_write_node)
 workflow.add_node("TASK_READ_Node", task_read_node)
 
@@ -1180,6 +1272,7 @@ INTENT_NODE_MAP = {
     "EMAIL_READ": "EMAIL_READ_Node",
     "CALENDAR_WRITE": "CALENDAR_WRITE_Node",
     "CALENDAR_READ": "CALENDAR_READ_Node",
+    "CALENDAR_RSVP": "CALENDAR_RSVP_Node",
     "TASK_WRITE": "TASK_WRITE_Node",
     "TASK_READ": "TASK_READ_Node",
 }
@@ -1187,7 +1280,7 @@ INTENT_NODE_MAP = {
 def route_after_supervisor(state: AgentState) -> Literal[
     "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
     "EMAIL_WRITE_Node", "EMAIL_READ_Node",
-    "CALENDAR_WRITE_Node", "CALENDAR_READ_Node",
+    "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "TASK_WRITE_Node", "TASK_READ_Node", "Aggregator_Node"
 ]:
     return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
@@ -1203,6 +1296,7 @@ workflow.add_conditional_edges(
         "EMAIL_READ_Node": "EMAIL_READ_Node",
         "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
+        "CALENDAR_RSVP_Node": "CALENDAR_RSVP_Node",
         "TASK_WRITE_Node": "TASK_WRITE_Node",
         "TASK_READ_Node": "TASK_READ_Node",
         "Aggregator_Node": "Aggregator_Node",
@@ -1213,7 +1307,7 @@ workflow.add_conditional_edges(
 def route_after_dispatcher(state: AgentState) -> Literal[
     "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
     "EMAIL_WRITE_Node", "EMAIL_READ_Node",
-    "CALENDAR_WRITE_Node", "CALENDAR_READ_Node",
+    "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "TASK_WRITE_Node", "TASK_READ_Node", "Aggregator_Node"
 ]:
     return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
@@ -1229,6 +1323,7 @@ workflow.add_conditional_edges(
         "EMAIL_READ_Node": "EMAIL_READ_Node",
         "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
+        "CALENDAR_RSVP_Node": "CALENDAR_RSVP_Node",
         "TASK_WRITE_Node": "TASK_WRITE_Node",
         "TASK_READ_Node": "TASK_READ_Node",
         "Aggregator_Node": "Aggregator_Node",
@@ -1256,6 +1351,7 @@ workflow.add_edge("EMAIL_WRITE_Node", "Dispatcher")
 workflow.add_edge("EMAIL_READ_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_WRITE_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_READ_Node", "Dispatcher")
+workflow.add_edge("CALENDAR_RSVP_Node", "Dispatcher")
 workflow.add_edge("TASK_WRITE_Node", "Dispatcher")
 workflow.add_edge("TASK_READ_Node", "Dispatcher")
 
