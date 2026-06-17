@@ -305,8 +305,28 @@ def rag_search_node(state: AgentState):
 def reasoner_node(state: AgentState):
     print("🧠 [Reasoner] 제미나이 3.5 싱킹 엔진 가동 및 최종 추론 답변 생성 중...")
     user_input = get_last_human_input(state)
-    docs = state["retrieved_docs"]
-    
+    raw_docs = state["retrieved_docs"]
+
+    # 같은 doc_url의 청크(chunk)를 하나로 병합 → LLM 인용번호와 소스카드 수 일치
+    docs = raw_docs
+    if raw_docs and "\n\n---\n\n" in raw_docs:
+        raw_blocks = re.split(r'\n\n---\n\n', raw_docs)
+        url_order = []      # 고유 URL 순서 보존
+        url_to_block = {}   # url → 대표 블록 텍스트
+        for block in raw_blocks:
+            url_m = re.search(r'^\[문서URL\]:\s*(https?://\S+)', block, re.MULTILINE)
+            u = url_m.group(1).strip() if url_m else f"__nurl_{len(url_order)}"
+            if u not in url_to_block:
+                url_to_block[u] = block
+                url_order.append(u)
+            else:
+                # 같은 문서의 추가 청크: 상세 내용만 이어 붙임
+                extra_m = re.search(r'\[상세 내용\]:\n(.*)', block, re.DOTALL)
+                if extra_m:
+                    url_to_block[u] += "\n" + extra_m.group(1).strip()
+        docs = "\n\n---\n\n".join(url_to_block[u] for u in url_order)
+        print(f"🔗 [Reasoner] 청크 병합: {len(raw_blocks)}개 → {len(url_order)}개 고유 문서")
+
     extracted_sources = []
     if docs:
         # ① BQ hybrid search 포맷 (rag_node.py): 문서 블록을 --- 구분자로 분리 후 각 블록에서 추출
