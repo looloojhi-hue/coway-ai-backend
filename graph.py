@@ -77,12 +77,26 @@ class RouteDecision(BaseModel):
 class RefinedQuery(BaseModel):
     query: str = Field(description="명사 위주의 핵심 키워드 조합")
 
+class CalendarReadSchema(BaseModel):
+    startYear: int
+    startMonth: int
+    startDay: int
+    endYear: int
+    endMonth: int
+    endDay: int
+
 class CalendarEventSchema(BaseModel):
     year: int
     month: int
     day: int
+    endYear: int   # 종료 날짜 (단일 날짜면 시작과 동일)
+    endMonth: int
+    endDay: int
+    isAllDay: bool  # True: 종일 이벤트(휴가·연차·공휴일·재택 등). isHalfDay와 동시에 True 불가
+    isHalfDay: bool  # True: 반차(오전/오후 4시간). isAllDay와 동시에 True 불가
+    halfDayPeriod: str  # isHalfDay=True일 때만 유효. "morning"(오전반차 09-13) 또는 "afternoon"(오후반차 14-18)
     title: str
-    startHour: int
+    startHour: int   # isAllDay=True 또는 isHalfDay=True면 0
     startMinute: int
     endHour: int
     endMinute: int
@@ -334,7 +348,7 @@ def reasoner_node(state: AgentState):
 
     # 🎯 [정해인 프로 지침 반영 - 민감 일비 비교 예시 원천 격살 및 중립 비용 샘플 전환 완료]
     prompt = f"""
-    당신은 코웨이(Coway) 임직원의 질문 의도를 찰떡같이 파악하고 사내 지식베이스를 바탕으로 가장 정확하고 '논리적인' 답변을 제공하는 최고 수준의 전사 통합 AI 어시스턴트 '코봇'입니다.
+    당신은 코웨이(Coway) 임직원의 질문 의도를 찰떡같이 파악하고 사내 지식베이스를 바탕으로 가장 정확하고 '논리적인' 답변을 제공하는 최고 수준의 전사 통합 AI 챗봇입니다.
 
     [🎯 사용자의 원래 질문 및 사연 (맥락 파악용)]
     "{user_input}"
@@ -361,12 +375,9 @@ def reasoner_node(state: AgentState):
     포맷 규격:
     [SOURCE_REPORTS] [{{"doc_name": "실제 문서 이름 1", "doc_url": "해당 문서의 구글드라이브 URL"}}, {{"doc_name": "실제 문서 이름 2", "doc_url": "해당 문서의 구글드라이브 URL"}}]
 
-    [📊 Generative UI & 데이터 시각화 특별 지침 - categories & series 일원화]
-    - 임직원이 부서별 인원 통계, 만족도 조사 수치 현황, 연도별 추이 비교 등 '시각적 차트' 그래프가 동반되면 좋은 질문을 던진 경우, 위의 텍스트 답변을 모두 마친 후 '맨 마지막 줄'에 반드시 아래의 정확한 JSON 차트 명세 포맷을 한 줄로 포함하여 사출하십시오.
-    - 앞뒤에 백틱(```) 기호는 엄격히 금지하며, 아래 예시처럼 categories와 series 구조 표준을 완벽히 지켜야 프론트엔드 캔버스가 작동합니다.
-
-    포맷 예시 (시각화 필요 시 답변 맨 하단 추가용 - 중립적 예시 체계 전환):
-    [CHART_DATA] {{"type": "bar", "title": "월별 비용 집행 추이 현황 (단위: 원)", "categories": ["1월", "2월", "3월", "4월"], "series": [{{"name": "집행액", "data": [1200000, 1500000, 1100000, 1800000]}}]}}
+    [📋 도표 시각화 지침]
+    - 수치·비율·통계가 포함된 내용은 마크다운 표(| 헤더 | 헤더 | ... |)로 정리하면 가독성이 높아집니다.
+    - [CHART_DATA] 차트 JSON은 RAG 답변에서 절대 사출하지 마세요. 차트는 BigQuery 정형데이터 분석 전용입니다.
     
     [검색된 규정]
     {docs}
@@ -470,6 +481,18 @@ def bq_node(state: AgentState):
           ② 본부별(hq_name) 출장건수·비용 분석
           ③ trip_type 기준 국내/해외 구분 분석 (GROUP BY trip_type 또는 별도 서브쿼리)
           ④ 해외출장인 경우: 목적지(destination)별 집중도, 출장목적(purpose_category)별 분류, 본부별 해외출장 빈도
+          ⑤ 🔴 [비용 구조 집계 — 누락 금지] 비용 구조 분석 섹션 작성을 위해 아래 항목을 반드시 포함하세요.
+             - COALESCE(SUM(SAFE_CAST(lodge_amt AS FLOAT64)), 0) AS total_lodge_amt
+             - COALESCE(SUM(SAFE_CAST(meal_amt AS FLOAT64)), 0) AS total_meal_amt
+             - COALESCE(SUM(SAFE_CAST(daily_allowance AS FLOAT64)), 0) AS total_daily_amt
+             - 교통비 13개 COALESCE 합산 AS total_transport_amt
+             → 전체 또는 trip_type별 집계(GROUP BY trip_type) 형태로 포함하세요.
+          ⑥ 🔴 [국내 purpose_detail] WHERE trip_type LIKE '%국내%' 조건으로 purpose_detail GROUP BY 건수·비용
+          ⑦ 🔴 [해외 purpose_detail] WHERE trip_type LIKE '%해외%' 조건으로 purpose_detail GROUP BY 건수·비용
+        * 🚨 [trip_type 필터 안전 규칙] trip_type의 실제 DB 저장값은 '국내', '해외', '국내출장', '해외출장' 등 다를 수 있습니다.
+          반드시 exact match(= '국내') 대신 LIKE 패턴(LIKE '%국내%', LIKE '%해외%')을 사용하세요.
+        * 🚨 [다중 SQL 지원] 세미콜론(;)으로 구분된 여러 SELECT 문을 생성할 수 있습니다.
+          시스템이 각 문장을 개별 실행하여 모든 결과를 LLM에 전달합니다. UNION ALL로 억지로 합치지 마세요.
 
     📁 DATASET 2: hrga_cost_data (총무팀 집행비용 데이터세트)
       - TABLE ID: budget_master (연간 예산 계획 테이블)
@@ -522,16 +545,50 @@ def bq_node(state: AgentState):
         generated_sql = sql_response.replace("```sql", "").replace("```", "").strip()
         print(f"🔍 [BQ Generated SQL]:\n{generated_sql}")
     print(f"🔍 [BQ] 사용자({user_email})의 권한 범위 내에서 데이터 탐색 및 SQL 실행 중...")
-    
+
     try:
-        query_job = bq_client.query(generated_sql)
-        query_results = [dict(row) for row in query_job.result()]
-        
-        data_status_guard = "NORMAL"
-        if not query_results or len(query_results) == 0:
-            data_status_guard = "EMPTY"
-        elif len(query_results) <= 1:
-            data_status_guard = "INSUFFICIENT"
+        # 다중 SQL 문장(;으로 구분)을 개별 실행 후 합산 — BigQuery는 마지막 결과만 반환하므로 직접 분리 실행
+        sql_statements = []
+        for raw in re.split(r';\s*\n', generated_sql.rstrip(';')):
+            stmt = raw.strip()
+            if stmt and re.search(r'\bSELECT\b', stmt, re.IGNORECASE):
+                sql_statements.append(stmt)
+
+        if len(sql_statements) <= 1:
+            query_job = bq_client.query(generated_sql.rstrip(';'))
+            query_results = [dict(row) for row in query_job.result()]
+            is_multi_query = False
+        else:
+            print(f"📊 [BQ] 다중 SQL {len(sql_statements)}개 감지 → 개별 실행 후 합산")
+            query_results = {}
+            is_multi_query = True
+            last_exec_error = None
+            for i, stmt in enumerate(sql_statements):
+                try:
+                    job = bq_client.query(stmt)
+                    rows = [dict(row) for row in job.result()]
+                    query_results[f"Q{i+1}"] = rows
+                    print(f"  ✅ Q{i+1}: {len(rows)}행 수신")
+                except Exception as seg_err:
+                    last_exec_error = seg_err
+                    query_results[f"Q{i+1}_error"] = str(seg_err)[:300]
+                    print(f"  ⚠️ Q{i+1} 오류: {str(seg_err)[:100]}")
+            # 전체 실패 시 원본 에러 재발생
+            has_any_success = any(isinstance(v, list) for v in query_results.values())
+            if not has_any_success and last_exec_error:
+                raise last_exec_error
+
+        # 데이터 품질 상태 판정
+        if is_multi_query:
+            has_data = any(isinstance(v, list) and len(v) > 0 for v in query_results.values())
+            data_status_guard = "NORMAL" if has_data else "EMPTY"
+        else:
+            if not query_results or len(query_results) == 0:
+                data_status_guard = "EMPTY"
+            elif len(query_results) <= 1:
+                data_status_guard = "INSUFFICIENT"
+            else:
+                data_status_guard = "NORMAL"
 
         # EMPTY: LLM에게 분석 요청하지 않고 즉시 안내 메시지 반환 (환각 방지)
         if data_status_guard == "EMPTY":
@@ -561,10 +618,13 @@ def bq_node(state: AgentState):
            - 국내/해외 건수와 비용 비율을 한 줄로 요약하세요.
            - 전체 데이터에서 가장 주목할 특이사항 1~2가지를 압축하여 마무리하세요.
         2. 해외 출장 분석 (해외 데이터가 있을 때)
-           - 본부별 집행 규모 TOP 순위, 출장 목적지 집중 지역, 주요 출장 목적 분류
+           - 본부별 집행 규모 TOP 순위, 출장 목적지 집중 지역, 주요 출장 목적(purpose_category) 분류
+           - 출장 목적 세부(purpose_detail) 상위 빈도 분류 — 국내 출장과 동일하게 해외도 반드시 포함하세요
         3. 국내 출장 분석 (국내 데이터가 있을 때)
-           - 본부별 집행 규모, 출장 빈도 TOP 순위, 지출 패턴 특이사항
+           - 본부별 집행 규모, 출장 빈도 TOP 순위, 출장목적 세부(purpose_detail) 지출 패턴 특이사항
         4. 비용 구조 분석 (항목별: 교통비·숙박비·식비·일비 비중)
+           - 데이터 JSON에 total_lodge_amt, total_meal_amt, total_daily_amt, total_transport_amt 컬럼이 있으면 반드시 비율로 환산하여 분석하세요.
+           - 이 컬럼들이 데이터에 없을 때만 "데이터 없음"으로 기재하세요. 있으면 절대 생략하지 마세요.
         5. 특이사항 (아래 임원 제외 규칙 적용)
 
         [임원 특이사항 제외 규칙]
@@ -583,9 +643,10 @@ def bq_node(state: AgentState):
         - 출장 데이터 기준 권장 차트 구성:
           ① 본부별 실제사용금액 비교 (bar)
           ② 국내 vs 해외 출장건수 비교 (bar 또는 각 본부별 국내/해외 계열 구분)
-          ③ 비용 항목별 구성 비율 (교통비/숙박비/식비/일비) (bar)
+          ③ 비용 항목별 구성 비율 (교통비/숙박비/식비/일비) (bar) — total_transport_amt, total_lodge_amt, total_meal_amt, total_daily_amt 데이터 사용
           ④ 출장 빈도 TOP 본부 (trip_count 기준 bar)
-          - 데이터에 destination, purpose_category 등 추가 차원이 있으면 추가 차트를 더 그리세요.
+          - ③번 차트는 total_lodge_amt 등 비용 집계 컬럼이 데이터에 있으면 반드시 그려야 합니다.
+          - 데이터에 destination, purpose_category, purpose_detail 등 추가 차원이 있으면 추가 차트를 더 그리세요.
         - 각 [CHART_DATA] 태그는 보고서 본문 마지막 줄들에 연속으로 사출하세요. 앞뒤 백틱(```) 기호 금지.
 
         포맷 규격 A:
@@ -736,35 +797,89 @@ def calendar_read_node(state: AgentState):
     print("📅 [CALENDAR_READ] 구글 캘린더 일정을 조회하는 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
-    
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    today_str = f"{now.year}년 {now.month}월 {now.day}일"
+
+    # LLM으로 조회 날짜 범위 추출 (미지정 시 오늘 하루로 기본값)
+    range_prompt = f"""
+    현재 날짜: {today_str}
+    사용자 요청에서 캘린더 조회 날짜 범위를 추출하세요.
+
+    [날짜 범위 규칙]
+    - "오늘", 날짜 미지정 → startYear/Month/Day = endYear/Month/Day = 오늘
+    - "내일" → 내일 날짜로 start/end 동일
+    - "이번 주" → 이번 주 월요일 ~ 일요일
+    - "이번 달", "이번달" → 이번 달 1일 ~ 말일
+    - "6월 17일~20일", "17일부터 20일까지" → start=17일, end=20일
+    - "다음 주" → 다음 주 월요일 ~ 일요일
+    - "6월" → 6월 1일 ~ 6월 30일
+
+    사용자 요청: {user_input}
+    """
+    try:
+        range_response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=range_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CalendarReadSchema,
+            ),
+        )
+        rng = CalendarReadSchema(**json.loads(range_response.text))
+    except Exception:
+        # 파싱 실패 시 오늘 하루로 fallback
+        rng = CalendarReadSchema(
+            startYear=now.year, startMonth=now.month, startDay=now.day,
+            endYear=now.year, endMonth=now.month, endDay=now.day,
+        )
+
+    time_min = datetime.datetime(rng.startYear, rng.startMonth, rng.startDay, 0, 0, 0,
+                                  tzinfo=datetime.timezone.utc).isoformat()
+    time_max = datetime.datetime(rng.endYear, rng.endMonth, rng.endDay, 23, 59, 59,
+                                  tzinfo=datetime.timezone.utc).isoformat()
+    is_single_day = (rng.startYear == rng.endYear and rng.startMonth == rng.endMonth and rng.startDay == rng.endDay)
+    if is_single_day:
+        range_label = f"{rng.startMonth}월 {rng.startDay}일"
+    else:
+        range_label = f"{rng.startMonth}월 {rng.startDay}일 ~ {rng.endMonth}월 {rng.endDay}일"
+
     schedule_text = ""
     try:
         calendar = get_workspace_service('calendar', 'v3', user_email)
-        now = datetime.datetime.now(datetime.timezone.utc)
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
-        
-        events_result = calendar.events().list(calendarId=user_email, timeMin=start_of_day, timeMax=end_of_day, singleEvents=True, orderBy='startTime').execute()
+        events_result = calendar.events().list(
+            calendarId=user_email,
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
         events = events_result.get('items', [])
-        
+
         if not events:
-            schedule_text = "오늘 예정된 일정이 없습니다."
+            schedule_text = f"{range_label} 예정된 일정이 없습니다."
         else:
             for e in events:
-                start = e['start'].get('dateTime', e['start'].get('date'))
-                time_str = start[11:16] if 'T' in start else "종일"
+                start = e['start'].get('dateTime', e['start'].get('date', ''))
+                if 'T' in start:
+                    date_part = f"{int(start[5:7])}월 {int(start[8:10])}일"
+                    time_part = start[11:16]
+                    time_str = f"{date_part} {time_part}" if not is_single_day else time_part
+                else:
+                    date_part = f"{int(start[5:7])}월 {int(start[8:10])}일"
+                    time_str = f"{date_part} 종일" if not is_single_day else "종일"
                 desc = e.get('description', '')
                 desc_str = f"\n ↳ 상세내용: {desc}" if desc else ""
-                schedule_text += f"- [일정] {time_str} 시작 | {e.get('summary')}{desc_str}\n"
+                schedule_text += f"- {time_str} | {e.get('summary', '(제목 없음)')}{desc_str}\n"
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
         print(f"⚠️ 캘린더 읽기 에러: {str(e)}")
-        schedule_text = "권한 오류"
+        schedule_text = "일정 조회 중 오류가 발생했습니다."
 
-    prompt = f"사용자 질문: {user_input}\n일정 데이터: \n{schedule_text}\n지시사항: 1.[종일/상태] 제외 2.[일정]만 24시 기준으로 명확히 나열 3.상세내용 포함 요약"
+    prompt = f"사용자 질문: {user_input}\n조회 범위: {range_label}\n일정 데이터:\n{schedule_text}\n지시사항: 날짜·시간 기준으로 명확히 나열하고 상세내용 포함하여 요약하세요."
     ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
-    return {"messages": [AIMessage(content=f"📅 **스마트 일정 브리핑**\n\n{ai_response}")]}
+    return {"messages": [AIMessage(content=f"📅 **{range_label} 일정 브리핑**\n\n{ai_response}")]}
 
 def calendar_write_node(state: AgentState):
     print("📅 [CALENDAR_WRITE] 구조화된 일정 데이터 추출 및 추가 중...")
@@ -778,11 +893,33 @@ def calendar_write_node(state: AgentState):
     현재 날짜: {today_str}
     사용자의 요청에서 추가할 구글 캘린더 일정 정보를 정확히 추출하여 오직 객체로 반환하세요.
 
-    [시간 해석 규칙]
+    [이벤트 유형 분류 규칙 — 우선순위 순서대로 적용]
+
+    ① 반차 판단 (isHalfDay=true, isAllDay=false)
+    - "반차", "오전반차", "오후반차", "오전 반차", "오후 반차" 키워드가 포함된 경우
+    - halfDayPeriod 결정:
+        * "오전반차" / "오전 반차" → halfDayPeriod: "morning"
+        * "오후반차" / "오후 반차" / 그냥 "반차" (오전/오후 구분 없음) → halfDayPeriod: "afternoon"
+          (날짜 없이 그냥 "반차"는 이미 출근한 상황으로 판단 → 오후 반차로 처리)
+    - startHour/startMinute/endHour/endMinute 모두 0으로 설정 (시스템이 자동 고정)
+
+    ② 종일 이벤트 판단 (isAllDay=true, isHalfDay=false)
+    - 휴가, 연차, 공휴일, 재택근무, 외근일 등 시간 지정이 없는 하루 또는 여러 날 이벤트
+    - startHour/startMinute/endHour/endMinute 모두 0으로 설정
+
+    ③ 시간 지정 이벤트 (isAllDay=false, isHalfDay=false)
+    - 미팅, 회의, 약속, 교육 등 구체적 시간이 있는 이벤트
+
+    [날짜 규칙]
+    - "6월 17일~20일", "17일부터 20일까지" 같이 범위가 주어지면 endYear/endMonth/endDay에 마지막 날짜를 넣으세요.
+    - 단일 날짜(예: "6월 17일 휴가")면 endYear/endMonth/endDay = year/month/day와 동일하게 설정하세요.
+    - 날짜 미지정이면 오늘(현재 날짜)로 설정하세요.
+
+    [시간 해석 규칙 — isAllDay=false이고 isHalfDay=false인 경우]
     - 오전/오후 구분 없이 표기된 시간은 업무시간(09:00~18:00) 기준으로 해석하세요.
       예: "1시" → 13:00, "2시" → 14:00, "3시" → 15:00, "9시" → 09:00, "10시" → 10:00
     - "내일", "모레" 등 상대적 날짜 표현을 현재 날짜 기준으로 정확히 계산하세요.
-    - 날짜가 명시되지 않았다면 오늘 날짜로, 종료시간이 없다면 시작시간으로부터 1시간 뒤로 설정하세요.
+    - 종료시간이 없다면 시작시간으로부터 1시간 뒤로 설정하세요.
 
     사용자 요청: {user_input}
     """
@@ -797,20 +934,55 @@ def calendar_write_node(state: AgentState):
         )
         data = CalendarEventSchema(**json.loads(response.text))
         calendar = get_workspace_service('calendar', 'v3', user_email)
-        
-        start_time = datetime.datetime(data.year, data.month, data.day, data.startHour, data.startMinute).isoformat()
-        end_time = datetime.datetime(data.year, data.month, data.day, data.endHour, data.endMinute).isoformat()
-        
-        event = {
-            'summary': data.title,
-            'start': {'dateTime': start_time, 'timeZone': 'Asia/Seoul'},
-            'end': {'dateTime': end_time, 'timeZone': 'Asia/Seoul'},
-        }
+
+        if data.isAllDay:
+            # 종일 이벤트 (휴가·연차·재택 등): Google Calendar API는 end가 exclusive이므로 마지막날 +1일
+            end_date_obj = datetime.date(data.endYear, data.endMonth, data.endDay) + datetime.timedelta(days=1)
+            event = {
+                'summary': data.title,
+                'start': {'date': f"{data.year:04d}-{data.month:02d}-{data.day:02d}"},
+                'end': {'date': end_date_obj.strftime('%Y-%m-%d')},
+            }
+            if data.year == data.endYear and data.month == data.endMonth and data.day == data.endDay:
+                date_label = f"{data.month}월 {data.day}일 (종일)"
+            else:
+                date_label = f"{data.month}월 {data.day}일 ~ {data.endMonth}월 {data.endDay}일 (종일)"
+
+        elif data.isHalfDay:
+            # 반차: 오전(09:00~13:00) / 오후(14:00~18:00) 고정
+            if data.halfDayPeriod == "morning":
+                s_hour, s_min, e_hour, e_min = 9, 0, 13, 0
+                period_label = "오전 반차 (09:00 ~ 13:00)"
+            else:  # afternoon (기본값)
+                s_hour, s_min, e_hour, e_min = 14, 0, 18, 0
+                period_label = "오후 반차 (14:00 ~ 18:00)"
+            start_time = datetime.datetime(data.year, data.month, data.day, s_hour, s_min).isoformat()
+            end_time = datetime.datetime(data.year, data.month, data.day, e_hour, e_min).isoformat()
+            event = {
+                'summary': data.title,
+                'start': {'dateTime': start_time, 'timeZone': 'Asia/Seoul'},
+                'end': {'dateTime': end_time, 'timeZone': 'Asia/Seoul'},
+            }
+            date_label = f"{data.month}월 {data.day}일 {period_label}"
+
+        else:
+            # 시간 지정 이벤트 (미팅·회의 등)
+            start_time = datetime.datetime(data.year, data.month, data.day, data.startHour, data.startMinute).isoformat()
+            end_time = datetime.datetime(data.endYear, data.endMonth, data.endDay, data.endHour, data.endMinute).isoformat()
+            event = {
+                'summary': data.title,
+                'start': {'dateTime': start_time, 'timeZone': 'Asia/Seoul'},
+                'end': {'dateTime': end_time, 'timeZone': 'Asia/Seoul'},
+            }
+            h1, m1 = str(data.startHour).zfill(2), str(data.startMinute).zfill(2)
+            h2, m2 = str(data.endHour).zfill(2), str(data.endMinute).zfill(2)
+            if data.year == data.endYear and data.month == data.endMonth and data.day == data.endDay:
+                date_label = f"{data.month}월 {data.day}일 {h1}:{m1} ~ {h2}:{m2}"
+            else:
+                date_label = f"{data.month}월 {data.day}일 {h1}:{m1} ~ {data.endMonth}월 {data.endDay}일 {h2}:{m2}"
+
         calendar.events().insert(calendarId=user_email, body=event).execute()
-        
-        h1 = str(data.startHour).zfill(2)
-        m1 = str(data.startMinute).zfill(2)
-        return {"messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **시간:** {data.month}월 {data.day}일 {h1}:{m1} 시작\n\n구글 캘린더에 완벽하게 연동되었습니다.")]}
+        return {"messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **기간:** {date_label}\n\n구글 캘린더에 완벽하게 연동되었습니다.")]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise

@@ -102,9 +102,9 @@
       <div id="dashboard-view" class="w-full max-w-6xl px-6 py-10 md:py-16 transition-all duration-500">
         <div class="mb-8 text-center md:text-left">
           <h1 class="text-3xl md:text-4xl font-bold text-slate-900 mb-3 tracking-tight">
-            안녕하세요, <span id="greeting-name" class="text-blue-600">임직원</span>님!
+            안녕하세요! <span class="text-blue-600">AI 챗봇</span>입니다.
           </h1>
-          <p class="text-slate-500 text-lg">오늘 코웨이 업무 중 어떤 정보가 필요하신가요?</p>
+          <p class="text-slate-500 text-lg">어떤 정보가 필요하신가요?</p>
         </div>
 
         <div class="flex flex-wrap gap-2 mb-3 items-center justify-center md:justify-start">
@@ -276,10 +276,6 @@
           <label class="block text-xs font-bold text-slate-500 mb-1.5">상세 내용</label>
           <textarea id="global-feedback-content" rows="4" class="w-full border border-slate-200 rounded-lg p-3 text-sm outline-none focus:border-blue-500 resize-none" placeholder="어떤 점이 불편하셨나요? 혹은 추가되었으면 하는 기능이나 답변 양식을 자세히 설명해주세요."></textarea>
         </div>
-        <div>
-          <label class="block text-xs font-bold text-slate-500 mb-1.5">증빙 자료 첨부 (스크린샷, PDF 등)</label>
-          <input type="file" id="global-feedback-file" accept="image/*, .pdf" class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
-        </div>
       </div> 
       <div class="p-4 bg-slate-50 flex justify-end gap-2 border-t border-slate-100">
         <button onclick="closeGlobalFeedbackModal()" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">취소</button>
@@ -320,7 +316,6 @@
         const response = await fetch("/api/user-info");
         if (response.ok) {
           currentUserProfile = await response.json();
-          document.getElementById('greeting-name').innerText = currentUserProfile.name;
           document.getElementById('user-name').innerText = `접속자: ${currentUserProfile.email}`;
         }
       } catch (err) {
@@ -353,7 +348,7 @@
             let badgeClass = 'bg-slate-50 text-slate-600 border border-slate-200';
             
             if (session.badge_type === 'COST' || session.badge_type === 'BQ') {
-              badgeText = '📈 비용분석';
+              badgeText = '📊 데이터분석';
               badgeClass = 'bg-blue-50 text-blue-600 border border-blue-200';
             } else if (session.badge_type === 'TRAVEL') {
               badgeText = '✈️ 출장정산';
@@ -1020,7 +1015,12 @@
       let dynamicChartCanvasHtml = "";
       if (finalChartsArray.length > 0) {
         finalChartsArray.forEach(chartItem => {
-          dynamicChartCanvasHtml += `\n\n<div id="${chartItem.id}" class="w-full h-[380px] my-6 bg-white border border-slate-200 shadow-xl shadow-slate-100/50 rounded-2xl p-5 fade-in"></div>\n\n`;
+          const chartTitle = (chartItem.config && chartItem.config.title) ? chartItem.config.title : '데이터 분석';
+          dynamicChartCanvasHtml += `
+<div class="w-full my-6 bg-white border border-slate-200 shadow-xl shadow-slate-100/50 rounded-2xl p-4 fade-in">
+  <p class="text-blue-900 font-bold text-sm mb-2 leading-snug">${chartTitle}</p>
+  <div id="${chartItem.id}" class="w-full h-[360px]"></div>
+</div>`;
         });
       }
 
@@ -1038,12 +1038,14 @@
       `;
       
       if (finalChartsArray.length > 0) {
+        window.chartInstances = window.chartInstances || {};
         setTimeout(() => {
           finalChartsArray.forEach(chartItem => {
             try {
               const chartDom = document.getElementById(chartItem.id);
               if (chartDom) {
                 const myChart = echarts.init(chartDom);
+                window.chartInstances[chartItem.id] = myChart;
                 let rawInputData = chartItem.config;
                 
                 const colorsMatrix = [
@@ -1053,18 +1055,30 @@
                   ['#f59e0b', '#9a3412']  
                 ];
 
+                const categoriesCount = rawInputData.categories ? rawInputData.categories.length : 0;
+                const chartType = rawInputData.type || 'bar';
+                // 6개 초과 카테고리 막대차트 → 가로 막대로 자동 전환 (부서명 가독성 향상, 슬라이더 불필요)
+                const useHorizontalBar = chartType === 'bar' && categoriesCount > 6;
+                // 가로 막대 시 카테고리 수에 맞춰 높이 동적 조정
+                if (useHorizontalBar) {
+                  const dynHeight = Math.max(320, categoriesCount * 38 + 60);
+                  chartDom.style.height = dynHeight + 'px';
+                  myChart.resize();
+                }
+
                 let processedSeries = [];
                 if (rawInputData.series && rawInputData.series.length > 0) {
                   processedSeries = rawInputData.series.map((s, idx) => {
                     const colorSet = colorsMatrix[idx % colorsMatrix.length];
+                    const gradDir = useHorizontalBar ? [0, 0, 1, 0] : [0, 0, 0, 1];
                     return {
                       name: s.name || `계열 ${idx+1}`,
-                      type: rawInputData.type || 'bar',
+                      type: chartType === 'pie' ? 'pie' : 'bar',
                       data: s.data,
-                      barWidth: rawInputData.series.length > 1 ? '25%' : '40%',
+                      barWidth: rawInputData.series.length > 1 ? '25%' : (useHorizontalBar ? '55%' : '40%'),
                       itemStyle: {
-                        borderRadius: [5, 5, 0, 0],
-                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        borderRadius: useHorizontalBar ? [0, 5, 5, 0] : [5, 5, 0, 0],
+                        color: new echarts.graphic.LinearGradient(...gradDir, [
                           { offset: 0, color: colorSet[0] },
                           { offset: 1, color: colorSet[1] }
                         ])
@@ -1073,52 +1087,35 @@
                   });
                 }
 
-                const categoriesCount = rawInputData.categories ? rawInputData.categories.length : 0;
-                let dynamicDataZoom = [];
-                if (categoriesCount > 6 || processedSeries.length > 1) {
-                  dynamicDataZoom = [
-                    {
-                      type: 'slider',
-                      show: true,
-                      start: 0,
-                      end: categoriesCount > 10 ? 40 : 60, 
-                      height: 20,
-                      bottom: '2%',
-                      borderColor: 'transparent',
-                      backgroundColor: '#f1f5f9',
-                      fillerColor: 'rgba(59, 130, 246, 0.15)',
-                      handleIcon: 'path://M10.7,11.9v-1.3H9.3v1.3c-4.9,0.3-8.8,4.4-8.8,9.4c0,5,3.9,9.1,8.8,9.4v1.3h1.3v-1.3c4.9-0.3,8.8-4.4,8.8-9.4C19.5,16.3,15.6,12.2,10.7,11.9z M13.3,24.4H6.7V23h6.6V24.4z M13.3,19.6H6.7v-1.4h6.6V19.6z',
-                      handleSize: '80%',
-                      handleStyle: { color: '#3b82f6', shadowBlur: 3, shadowColor: 'rgba(0, 0, 0, 0.2)' },
-                      textStyle: { color: '#64748b', fontSize: 10 }
+                let premiumOption;
+                if (useHorizontalBar) {
+                  premiumOption = {
+                    legend: { show: processedSeries.length > 1, top: '2%', left: 'center', textStyle: { color: '#64748b', fontSize: 11 } },
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                    grid: { left: '2%', right: '6%', bottom: '4%', top: processedSeries.length > 1 ? '12%' : '4%', containLabel: true },
+                    xAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } } },
+                    yAxis: {
+                      type: 'category',
+                      data: (rawInputData.categories || []).slice().reverse(),
+                      axisLabel: { textStyle: { color: '#64748b', fontSize: 11 }, width: 120, overflow: 'truncate' }
                     },
-                    { type: 'inside', start: 0, end: 100 } 
-                  ];
+                    series: processedSeries.map(s => ({ ...s, data: (s.data || []).slice().reverse() }))
+                  };
+                } else {
+                  premiumOption = {
+                    legend: { show: processedSeries.length > 1, top: '2%', left: 'center', textStyle: { color: '#64748b', fontSize: 11 } },
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+                    grid: { left: '4%', right: '4%', bottom: '5%', top: processedSeries.length > 1 ? '14%' : '6%', containLabel: true },
+                    xAxis: {
+                      type: 'category',
+                      data: rawInputData.categories || [],
+                      axisLabel: { interval: 0, rotate: categoriesCount > 4 ? 30 : 0, textStyle: { color: '#64748b', fontSize: 11 } }
+                    },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } } },
+                    series: processedSeries
+                  };
                 }
 
-                const premiumOption = {
-                  title: { 
-                    text: rawInputData.title || '다차원 분석 통계', 
-                    left: 'center', 
-                    textStyle: { color: '#1e3a8a', fontSize: 16, fontWeight: 'bold' } 
-                  },
-                  legend: { top: '8%', left: 'center', textStyle: { color: '#64748b', fontSize: 11 } },
-                  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-                  grid: { left: '4%', right: '4%', bottom: dynamicDataZoom.length > 0 ? '15%' : '8%', top: '20%', containLabel: true },
-                  xAxis: { 
-                    type: 'category', 
-                    data: rawInputData.categories || [],
-                    axisLabel: { 
-                      interval: 0, 
-                      rotate: categoriesCount > 4 ? 30 : 0, 
-                      textStyle: { color: '#64748b', fontSize: 11 } 
-                    }
-                  },
-                  yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } } },
-                  dataZoom: dynamicDataZoom, 
-                  series: processedSeries
-                };
-                
                 myChart.setOption(premiumOption);
                 const resizeObserver = new ResizeObserver(() => myChart.resize());
                 resizeObserver.observe(chartDom);
@@ -1263,64 +1260,36 @@
       const priority = document.getElementById('global-feedback-priority').value;
       const title = document.getElementById('global-feedback-title').value.trim();
       const content = document.getElementById('global-feedback-content').value.trim();
-      const fileInput = document.getElementById('global-feedback-file');
 
       if (!title || !content) {
         showToast('⚠️ 제목과 상세 내용을 모두 입력해주세요.');
         return;
       }
 
-      const feedbackData = {
-        type: type,
-        priority: priority,
-        title: title,
-        content: content,
-        lastQuery: globalLastUserQuery || "질문 이력 없음"
-      };
-
       const submitBtn = document.getElementById('global-feedback-submit-btn');
       const originalHtml = submitBtn.innerHTML;
       submitBtn.innerHTML = '<div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> 제출 중...';
       submitBtn.disabled = true;
 
-      const executeSubmit = async (finalData) => {
-        try {
-          const response = await fetch("/api/feedback/save", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(finalData)
-          });
-          
-          const result = await response.json();
-          submitBtn.innerHTML = originalHtml;
-          submitBtn.disabled = false;
-          
-          if (result.success) {
-            closeGlobalFeedbackModal();
-            showToast("🎉 소중한 의견이 성공적으로 접수되었습니다!");
-            if (fileInput) fileInput.value = ""; 
-          } else {
-            showToast("⚠️ 접수 실패: " + result.error);
-          }
-        } catch (error) {
-          submitBtn.innerHTML = originalHtml;
-          submitBtn.disabled = false;
-          showToast("⚠️ 서버 통신 오류가 발생했습니다.");
+      try {
+        const response = await fetch("/api/feedback/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, priority, title, content, lastQuery: globalLastUserQuery || "질문 이력 없음" })
+        });
+        const result = await response.json();
+        submitBtn.innerHTML = originalHtml;
+        submitBtn.disabled = false;
+        if (result.success) {
+          closeGlobalFeedbackModal();
+          showToast("🎉 소중한 의견이 성공적으로 접수되었습니다!");
+        } else {
+          showToast("⚠️ 접수 실패: " + (result.error || "알 수 없는 오류"));
         }
-      };
-
-      if (fileInput && fileInput.files.length > 0) {
-        const file = fileInput.files[0];
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          feedbackData.fileData = e.target.result.split(',')[1]; 
-          feedbackData.fileName = file.name;
-          feedbackData.mimeType = file.type;
-          executeSubmit(feedbackData); 
-        };
-        reader.readAsDataURL(file); 
-      } else {
-        executeSubmit(feedbackData);
+      } catch (error) {
+        submitBtn.innerHTML = originalHtml;
+        submitBtn.disabled = false;
+        showToast("⚠️ 서버 통신 오류가 발생했습니다.");
       }
     }
   </script>

@@ -83,9 +83,6 @@ class GlobalFeedbackSaveRequest(BaseModel):
     title: str
     content: str
     lastQuery: Optional[str] = ""
-    fileData: Optional[str] = None  # Base64 디코딩용 파일 바이너리
-    fileName: Optional[str] = None
-    mimeType: Optional[str] = None
 
 # ====================================================================
 # [SECTION 2] 🔑 사내 보안 가이드라인 준수 IAP 사원증 추출 엔진
@@ -108,7 +105,7 @@ async def read_root(request: Request):
     try:
         with open(html_file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
-        return HTMLResponse(content=html_content)
+        return HTMLResponse(content=html_content, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
     except Exception as e:
         print(f"❌ [HTML 로드 크래시 방어] 파일 읽기 실패: {e}")
         return HTMLResponse(content=f"<h1>Internal Server Error: Template Load Failure</h1><p>{str(e)}</p>", status_code=500)
@@ -178,9 +175,10 @@ def extract_structured_payload(text: str, tag: str):
                     else:
                         collected_payload.append(parsed_obj)
                 else:
-                    # 복수 차트가 인입될 경우 첫 번째 주력 분석 차트를 최우선 바인딩 처리
+                    # CHART_DATA 다중 사출 전부 수집 (첫 번째만 저장 시 1개 차트 버그 발생)
                     if collected_payload is None:
-                        collected_payload = parsed_obj
+                        collected_payload = []
+                    collected_payload.append(parsed_obj)
             except Exception as parse_err:
                 print(f"⚠️ [파이썬 계층 데이터 해독 패닉] {tag} JSON 파싱 실패: {parse_err}")
                 
@@ -445,12 +443,44 @@ async def log_feedback_endpoint(payload: FeedbackLogRequest, user_email: str = D
 @app.post("/api/feedback/save")
 async def save_global_feedback_endpoint(payload: GlobalFeedbackSaveRequest, user_email: str = Depends(get_iap_user_email)):
     print(f"🎉 [개선 제안 접수] 제목: {payload.title} / 계정: {user_email}")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    doc_id = f"FB-{now.strftime('%Y%m%d%H%M%S')}-{user_email.split('@')[0]}"
+
+    # 1. Firestore 저장 (항상 동작 — 기본 백본)
     try:
-        if payload.fileData:
-            print(f"📁 첨부파일 감지됨: {payload.fileName} ({payload.mimeType}) -> GCS 버킷 이관 준비 완료")
-        return {"success": True, "id": "FB-PYTHON-GENERATED-ID"}
-    except Exception as err:
-        return {"success": False, "error": str(err)}
+        db_fs.collection("improvement_suggestions").document(doc_id).set({
+            "user_email": user_email,
+            "type": payload.type,
+            "priority": payload.priority,
+            "title": payload.title,
+            "content": payload.content,
+            "last_query": payload.lastQuery or "",
+            "created_at": firestore.SERVER_TIMESTAMP
+        })
+        print(f"✅ [개선제안] Firestore 저장 완료: {doc_id}")
+    except Exception as fs_err:
+        print(f"⚠️ [개선제안] Firestore 저장 실패: {fs_err}")
+
+    # 2. Google Sheets 저장 (FEEDBACK_SHEET_ID 환경변수 설정 시 활성화)
+    sheet_id = os.environ.get("FEEDBACK_SHEET_ID", "")
+    if sheet_id:
+        try:
+            import google.auth
+            from googleapiclient.discovery import build as gapi_build
+            creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            sheets = gapi_build("sheets", "v4", credentials=creds)
+            sheets.spreadsheets().values().append(
+                spreadsheetId=sheet_id,
+                range="Sheet1!A:G",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[ts_str, user_email, payload.type, payload.priority, payload.title, payload.content, payload.lastQuery or ""]]}
+            ).execute()
+            print(f"✅ [개선제안] Google Sheets 저장 완료")
+        except Exception as sheets_err:
+            print(f"⚠️ [개선제안] Google Sheets 저장 실패: {sheets_err}")
+
+    return {"success": True, "id": doc_id}
 
 # ====================================================================
 # [SECTION 8] 🔐 [WBS 2.5] 구글 워크스페이스 OAuth 2.0 인증 게이트웨이
