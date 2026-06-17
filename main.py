@@ -29,10 +29,12 @@ COLLECTION_NAME = "coway_chat_sessions"
 # gmail.modify(과도한 권한) 배제 — 읽기 전용 + 초안 작성으로 분리
 # ====================================================================
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",  # 메일 요약 및 읽기 전용
-    "https://www.googleapis.com/auth/gmail.compose",   # 초안 작성 (메일 삭제/수정 불가)
-    "https://www.googleapis.com/auth/calendar",         # 캘린더 조회 및 일정 등록
-    "https://www.googleapis.com/auth/tasks"             # Tasks 조회 및 등록
+    "https://www.googleapis.com/auth/gmail.readonly",  # 메일 요약 및 읽기, 검색
+    "https://www.googleapis.com/auth/gmail.compose",   # 초안 작성
+    "https://www.googleapis.com/auth/gmail.send",      # 메일 즉시 발송 및 회신
+    "https://www.googleapis.com/auth/calendar",         # 캘린더 조회/등록/수정/삭제/RSVP
+    "https://www.googleapis.com/auth/tasks",            # Tasks 조회/등록/완료/삭제
+    "https://www.googleapis.com/auth/drive.readonly",  # 드라이브 파일 검색 및 목록 조회
 ]
 
 # OAuth 2.0 클라이언트 자격증명 — GCP Console에서 발급된 값을 Cloud Run 환경변수로 주입

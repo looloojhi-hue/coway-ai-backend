@@ -72,7 +72,7 @@ class AgentState(TypedDict):
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
-    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, CALENDAR_READ, CALENDAR_WRITE, CALENDAR_RSVP, TASK_READ, TASK_WRITE 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
+    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, EMAIL_SEND, EMAIL_SEARCH, EMAIL_REPLY, CALENDAR_READ, CALENDAR_WRITE, CALENDAR_RSVP, CALENDAR_UPDATE, CALENDAR_DELETE, CALENDAR_FREE, TASK_READ, TASK_WRITE, TASK_ACTION, DRIVE_SEARCH, DRIVE_LIST 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
 
 class RefinedQuery(BaseModel):
     query: str = Field(description="명사 위주의 핵심 키워드 조합")
@@ -105,6 +105,63 @@ class TaskSchema(BaseModel):
     title: str
     notes: str
     due: str
+
+class EmailComposeSchema(BaseModel):
+    to: str           # 수신자 이메일, 복수면 콤마 구분
+    cc: str           # 참조 이메일, 없으면 빈 문자열
+    subject: str      # 메일 제목
+    body: str         # 메일 본문 (HTML 아닌 순수 텍스트)
+    send_now: bool    # True: 즉시 발송, False: 임시보관함 저장
+
+class EmailSearchSchema(BaseModel):
+    gmail_query: str  # Gmail 검색 쿼리 (from:user@co.kr, subject:보고서 등)
+    max_results: int  # 최대 조회 건수 (1~20)
+
+class EmailReplySchema(BaseModel):
+    search_query: str  # 회신할 메일 찾기용 검색어 (제목 or 발신자 이름/이메일)
+    reply_body: str    # 회신 내용
+    reply_all: bool    # True: 전체 회신, False: 보낸사람에게만
+
+class CalendarDeleteSchema(BaseModel):
+    search_query: str       # 삭제할 이벤트 검색어 (제목 일부 or 날짜 설명)
+    target_year: int        # 이벤트 날짜 (0이면 미지정)
+    target_month: int
+    target_day: int
+
+class CalendarUpdateSchema(BaseModel):
+    search_query: str       # 수정할 이벤트 검색어
+    target_year: int        # 검색 기준 날짜 (0이면 미지정, 이번 주 내 탐색)
+    target_month: int
+    target_day: int
+    new_title: str          # 새 제목 (변경 없으면 빈 문자열)
+    new_year: int           # 새 날짜 (0이면 변경 없음)
+    new_month: int
+    new_day: int
+    new_start_hour: int     # 새 시작 시 (-1이면 변경 없음)
+    new_start_minute: int
+    new_end_hour: int
+    new_end_minute: int
+    attendees_add: str      # 추가할 참석자 이메일 (콤마 구분, 없으면 빈 문자열)
+
+class CalendarFreeBusySchema(BaseModel):
+    startYear: int
+    startMonth: int
+    startDay: int
+    endYear: int
+    endMonth: int
+    endDay: int
+
+class TaskActionSchema(BaseModel):
+    search_title: str   # 대상 할일 검색어 (부분 매치)
+    action: str         # "complete" | "delete" | "update"
+    new_title: str      # action=update 시 새 제목 (변경 없으면 빈 문자열)
+    new_due: str        # action=update 시 새 마감일 YYYY-MM-DD (없으면 빈 문자열)
+    new_notes: str      # action=update 시 새 메모 (없으면 빈 문자열)
+
+class DriveSearchSchema(BaseModel):
+    query: str          # 검색할 파일명 or 키워드
+    max_results: int    # 최대 조회 건수 (1~20)
+    file_type: str      # "any" | "doc" | "sheet" | "slide" | "pdf" | "folder"
 
 # ====================================================================
 # 🛡️ [개정 완공] 구글 워크스페이스 3-Legged OAuth 자율 토큰 관리 헬퍼 엔진
@@ -167,25 +224,46 @@ def supervisor_node(state: AgentState):
     - RAG: 사내 규정, 복리후생, 인사, 가이드 등 텍스트 문서 검색
     - BQ: 매출액, 실적, 예산, 판매량 등 수치 데이터 조회 (예: 집행비용 분석, 출장현황 분석)
     - GENERAL: 단순 인사, 안부, 일상 대화 (예: 안녕, 넌 누구야)
-    - EMAIL_WRITE: 메일/이메일 작성, 초안 작성, 답장 요청
-    - EMAIL_READ: 이메일 요약, 읽기, 확인 요청
-    - CALENDAR_WRITE: 캘린더/일정/스케줄 추가·등록·생성 요청 (예: 내일 오후 3시 미팅 일정 잡아줘)
+    [메일 관련]
+    - EMAIL_WRITE: 메일/이메일 초안 작성, 임시보관함 저장 요청 (수신자가 불명확하거나 검토 후 발송 원할 때)
+    - EMAIL_SEND: 메일/이메일을 즉시 발송 요청 (수신자가 명확하고 "보내줘", "발송해줘" 등 즉시 전송 의도가 명확할 때)
+    - EMAIL_SEARCH: 메일 검색·찾기 요청 (예: 지난주 김과장 메일 찾아줘, 계약서 관련 메일 검색해줘)
+    - EMAIL_REPLY: 특정 메일에 회신·답장 요청 (예: 어제 받은 보고서 메일에 회신해줘)
+    - EMAIL_READ: 이메일 전체 요약, 브리핑, 읽지 않은 메일 확인 요청
+    [캘린더 관련]
+    - CALENDAR_WRITE: 캘린더/일정/스케줄 새로 추가·등록·생성 요청 (예: 내일 오후 3시 미팅 일정 잡아줘)
     - CALENDAR_READ: 캘린더/일정 조회·확인 요청 (예: 오늘 내 미팅 일정 알려줘)
-    - CALENDAR_RSVP: 캘린더 초대 일정의 참석 여부 업데이트 요청 (예: 참석 여부 확인 안한 것들 참석으로 체크해줘, 초대 수락해줘, 미응답 일정 수락)
+    - CALENDAR_RSVP: 캘린더 초대 일정의 참석 여부 업데이트 요청 (예: 참석 여부 확인 안한 것들 참석으로 체크해줘)
+    - CALENDAR_UPDATE: 기존 일정 수정·변경 요청 (예: 내일 팀회의 시간 3시로 바꿔줘, 참석자 추가해줘)
+    - CALENDAR_DELETE: 기존 일정 삭제·취소 요청 (예: 다음주 워크샵 일정 삭제해줘)
+    - CALENDAR_FREE: 일정 여유 시간·빈 시간 조회, 미팅 가능 시간 확인 요청 (예: 이번주 빈 시간 알려줘, 언제 미팅 잡을 수 있어?)
+    [할일(Tasks) 관련]
     - TASK_WRITE: 할일·할 일·해야 할 일·테스크·태스크·투두·TODO·to-do 등록·추가 요청
     - TASK_READ: 할일·할 일·해야 할 일·테스크 목록 조회·확인 요청
+    - TASK_ACTION: 할일 완료 처리, 삭제, 수정 요청 (예: 보고서 작성 할일 완료로 표시해줘, 할일 제목 바꿔줘)
+    [구글 드라이브 관련]
+    - DRIVE_SEARCH: 구글 드라이브에서 파일 검색 요청 (예: 드라이브에서 2025년 결산 보고서 찾아줘)
+    - DRIVE_LIST: 구글 드라이브 최근 파일 목록·공유 파일 조회 요청 (예: 드라이브 최근 파일 보여줘, 공유받은 파일 알려줘)
     [★ 핵심 구분 규칙 - 반드시 준수]
-    1. "할일", "할 일", "해야 할 일", "테스크", "태스크", "투두", "to-do", "체크리스트" 키워드 → TASK_WRITE 또는 TASK_READ
-       ※ 이 키워드가 포함된 요청은 절대로 CALENDAR로 분류하지 마세요.
+    1. "할일", "할 일", "해야 할 일", "테스크", "태스크", "투두", "to-do", "체크리스트" 키워드 → TASK_WRITE/TASK_READ/TASK_ACTION (절대로 CALENDAR로 분류 금지)
     2. "참석 여부", "참석으로 체크", "참석 확인", "초대 수락", "미응답 일정", "참석 체크" 키워드 → 반드시 CALENDAR_RSVP (CALENDAR_WRITE가 아님)
     3. "일정 등록", "일정 추가", "일정 잡아", "캘린더 추가", "캘린더 등록" 등 새 이벤트 생성 키워드 → CALENDAR_WRITE
-    4. "일정", "캘린더", "calendar", "스케줄", "미팅", "회의", "약속" 키워드 (생성이 아닌 경우) → CALENDAR_READ
-    5. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
+    4. "일정 삭제", "일정 취소", "일정 지워" → CALENDAR_DELETE / "일정 변경", "일정 수정", "시간 바꿔" → CALENDAR_UPDATE
+    5. "빈 시간", "여유 시간", "언제 가능", "미팅 가능 시간" → CALENDAR_FREE
+    6. "보내줘", "발송해줘" + 수신자 명확 → EMAIL_SEND / 수신자 불명확하거나 검토 후 보내고 싶다면 → EMAIL_WRITE
+    7. "회신", "답장", "답변 메일" → EMAIL_REPLY / "메일 찾아줘", "메일 검색" → EMAIL_SEARCH
+    8. "할일 완료", "완료로 표시", "삭제해줘(할일)", "할일 수정" → TASK_ACTION
+    9. "드라이브 검색", "파일 찾아줘(드라이브)" → DRIVE_SEARCH / "드라이브 목록", "최근 파일" → DRIVE_LIST
+    10. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
 
     [복수 요청 예시]
     - "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
     - "메일 요약하고 오늘 일정도 알려줘" → ["EMAIL_READ", "CALENDAR_READ"]
-    - "파이썬 교육 할일 등록해줘, 캘린더에는 내일 1시로 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
+    - "김과장한테 보고서 완료 메일 바로 보내줘" → ["EMAIL_SEND"]
+    - "내일 팀회의 시간 2시로 바꿔줘" → ["CALENDAR_UPDATE"]
+    - "이번주 빈 시간 알려줘" → ["CALENDAR_FREE"]
+    - "보고서 작성 할일 완료 처리해줘" → ["TASK_ACTION"]
+    - "드라이브에서 2025 결산 파일 찾아줘" → ["DRIVE_SEARCH"]
 
     질문: {user_input}
     """
@@ -787,28 +865,51 @@ def bq_corrector_node(state: AgentState):
     return {"refined_query": corrected_sql, "bq_retry_count": retry_cnt}
 
 def email_write_node(state: AgentState):
-    print("✉️ [EMAIL_WRITE] 제미나이 3.5가 이메일 초안 작성을 준비합니다...")
+    print("✉️ [EMAIL_WRITE] 이메일 초안 작성 및 임시보관함 저장 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
-    
-    prompt = f"""당신은 코웨이 임직원을 돕는 전문 비서입니다.
-    [지시사항]: {user_input}
-    결과는 [메일 제목]과 [메일 본문]으로 구분하여 비즈니스 매너에 맞게 작성하세요."""
-    
-    ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
-    
+
+    compose_prompt = f"""
+현재 날짜: {datetime.datetime.now().strftime('%Y-%m-%d')}
+사용자 소속: 코웨이 임직원 ({user_email})
+사용자 요청: {user_input}
+
+코웨이 비즈니스 메일 형식에 맞게 메일을 작성하세요.
+수신자가 명시되지 않은 경우 to는 빈 문자열, cc는 빈 문자열로 설정하세요.
+"""
     try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=compose_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=EmailComposeSchema,
+            ),
+        )
+        data = EmailComposeSchema(**json.loads(response.text))
+
+        from email.mime.text import MIMEText
+        msg = MIMEText(data.body, 'plain', 'utf-8')
+        msg['Subject'] = data.subject
+        msg['From'] = user_email
+        if data.to:
+            msg['To'] = data.to
+        if data.cc:
+            msg['Cc'] = data.cc
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
         gmail = get_workspace_service('gmail', 'v1', user_email)
-        raw_message = f"Subject: AI가 작성한 메일 초안\n\n{ai_response}"
-        encoded_message = base64.urlsafe_b64encode(raw_message.encode("utf-8")).decode("utf-8")
-        gmail.users().drafts().create(userId=user_email, body={"message": {"raw": encoded_message}}).execute()
-        print("✅ [EMAIL_WRITE] Gmail 임시보관함 적재 성공")
+        gmail.users().drafts().create(userId='me', body={"message": {"raw": raw}}).execute()
+        print("✅ [EMAIL_WRITE] Gmail 임시보관함 저장 완료")
+
+        to_line = f"\n- **받는사람:** {data.to}" if data.to else ""
+        cc_line = f"\n- **참조:** {data.cc}" if data.cc else ""
+        return {"messages": [AIMessage(content=f"✨ **이메일 초안이 작성되어 임시보관함에 저장되었습니다!**{to_line}{cc_line}\n- **제목:** {data.subject}\n\n---\n\n{data.body}\n\n💡 Gmail 임시보관함에서 검토 후 발송하세요.")]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
-        print(f"⚠️ Gmail 연동 실패: {str(e)}")
-
-    return {"messages": [AIMessage(content=f"✨ **이메일 초안 작성이 완료되었습니다!**\n\nGmail의 **[임시보관함]**에 메일을 안전하게 저장해 두었습니다.\n\n---\n\n{ai_response}")]}
+        print(f"⚠️ EMAIL_WRITE 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 이메일 초안 작성 중 오류: {str(e)}")]}
 
 def email_read_node(state: AgentState):
     print("📧 [EMAIL_READ] 안읽은 메일을 수신하여 브리핑 정제 중...")
@@ -849,6 +950,179 @@ def email_read_node(state: AgentState):
     """
     ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
     return {"messages": [AIMessage(content=f"📧 **최신 메일 요약 브리핑**\n\n{ai_response}")]}
+
+def email_send_node(state: AgentState):
+    print("📤 [EMAIL_SEND] 이메일 즉시 발송 처리 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    compose_prompt = f"""
+현재 날짜: {datetime.datetime.now().strftime('%Y-%m-%d')}
+발신자: {user_email}
+사용자 요청: {user_input}
+
+수신자(to), 참조(cc), 제목(subject), 본문(body)을 추출하세요.
+수신자가 명확히 명시된 경우에만 send_now=true로 설정하세요.
+본문은 코웨이 비즈니스 메일 형식으로 작성하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=compose_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=EmailComposeSchema,
+            ),
+        )
+        data = EmailComposeSchema(**json.loads(response.text))
+
+        if not data.to:
+            return {"messages": [AIMessage(content="⚠️ 수신자(받는사람)가 명확하지 않습니다. 누구에게 보낼지 이메일 주소를 포함해서 다시 요청해 주세요.\n\n예: \"김철수(chulsu.kim@coway.com)에게 보고서 완료 메일 보내줘\"")]}
+
+        from email.mime.text import MIMEText
+        msg = MIMEText(data.body, 'plain', 'utf-8')
+        msg['Subject'] = data.subject
+        msg['From'] = user_email
+        msg['To'] = data.to
+        if data.cc:
+            msg['Cc'] = data.cc
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+        gmail = get_workspace_service('gmail', 'v1', user_email)
+        gmail.users().messages().send(userId='me', body={"raw": raw}).execute()
+        print("✅ [EMAIL_SEND] 이메일 발송 완료")
+
+        cc_line = f"\n- **참조:** {data.cc}" if data.cc else ""
+        return {"messages": [AIMessage(content=f"✅ **이메일이 성공적으로 발송되었습니다!**\n\n- **받는사람:** {data.to}{cc_line}\n- **제목:** {data.subject}\n\n---\n\n{data.body}")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ EMAIL_SEND 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 이메일 발송 중 오류: {str(e)}")]}
+
+
+def email_search_node(state: AgentState):
+    print("🔍 [EMAIL_SEARCH] Gmail 검색 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    now = datetime.datetime.now()
+    search_prompt = f"""
+현재 날짜: {now.strftime('%Y-%m-%d')}
+사용자 요청: {user_input}
+
+사용자의 메일 검색 의도에 맞는 Gmail 검색 쿼리를 작성하세요.
+Gmail 검색 연산자 예시: from:user@co.kr, subject:보고서, is:unread, after:2026/06/01, before:2026/06/30
+복합 조건은 AND로 연결하세요. max_results는 기본 10.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=EmailSearchSchema,
+            ),
+        )
+        data = EmailSearchSchema(**json.loads(response.text))
+        gmail = get_workspace_service('gmail', 'v1', user_email)
+
+        results = gmail.users().messages().list(
+            userId='me', q=data.gmail_query, maxResults=min(data.max_results, 20)
+        ).execute()
+        messages = results.get('messages', [])
+
+        if not messages:
+            return {"messages": [AIMessage(content=f"🔍 **검색 결과가 없습니다.**\n\n검색 조건: `{data.gmail_query}`")]}
+
+        email_text = ""
+        for idx, msg_info in enumerate(messages):
+            msg = gmail.users().messages().get(
+                userId='me', id=msg_info['id'], format='metadata',
+                metadataHeaders=['From', 'Subject', 'Date']
+            ).execute()
+            headers = msg.get('payload', {}).get('headers', [])
+            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
+            sender = next((h['value'] for h in headers if h['name'] == 'From'), '알수없음')
+            date_str = next((h['value'] for h in headers if h['name'] == 'Date'), '')[:16]
+            snippet = msg.get('snippet', '')[:100]
+            email_text += f"[{idx+1}] {subject}\n  발신: {sender}\n  날짜: {date_str}\n  내용: {snippet}...\n\n"
+
+        summary_prompt = f"사용자 요청: {user_input}\n검색된 메일:\n{email_text}\n검색 결과를 간결하게 정리해 주세요."
+        ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=summary_prompt).text
+        return {"messages": [AIMessage(content=f"🔍 **메일 검색 결과** ({len(messages)}건)\n\n{ai_response}")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ EMAIL_SEARCH 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 메일 검색 중 오류: {str(e)}")]}
+
+
+def email_reply_node(state: AgentState):
+    print("↩️ [EMAIL_REPLY] 회신 메일 처리 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    reply_prompt = f"""
+사용자 요청: {user_input}
+회신할 메일을 찾기 위한 검색어, 회신 내용, 전체 회신 여부를 추출하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=reply_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=EmailReplySchema,
+            ),
+        )
+        data = EmailReplySchema(**json.loads(response.text))
+        gmail = get_workspace_service('gmail', 'v1', user_email)
+
+        results = gmail.users().messages().list(
+            userId='me', q=data.search_query, maxResults=1
+        ).execute()
+        messages = results.get('messages', [])
+
+        if not messages:
+            return {"messages": [AIMessage(content=f"⚠️ 회신할 메일을 찾지 못했습니다.\n\n검색 조건: `{data.search_query}`\n\n더 구체적인 제목이나 발신자를 알려주세요.")]}
+
+        orig = gmail.users().messages().get(userId='me', id=messages[0]['id'], format='metadata',
+                                             metadataHeaders=['From', 'Subject', 'Message-ID', 'To']).execute()
+        headers = orig.get('payload', {}).get('headers', [])
+        orig_from = next((h['value'] for h in headers if h['name'] == 'From'), '')
+        orig_subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
+        orig_msg_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), '')
+        orig_to = next((h['value'] for h in headers if h['name'] == 'To'), '')
+
+        subject = orig_subject if orig_subject.startswith('Re:') else f"Re: {orig_subject}"
+        to_addr = orig_from
+        if data.reply_all and orig_to:
+            to_addr = f"{orig_from}, {orig_to}"
+
+        ai_body_prompt = f"원본 메일 발신자: {orig_from}\n원본 제목: {orig_subject}\n회신 지시사항: {data.reply_body}\n\n코웨이 비즈니스 메일 형식으로 회신 본문을 작성하세요."
+        reply_body_text = ai_client.models.generate_content(model=MODEL_NAME, contents=ai_body_prompt).text
+
+        from email.mime.text import MIMEText
+        msg = MIMEText(reply_body_text, 'plain', 'utf-8')
+        msg['Subject'] = subject
+        msg['From'] = user_email
+        msg['To'] = to_addr
+        if orig_msg_id:
+            msg['In-Reply-To'] = orig_msg_id
+            msg['References'] = orig_msg_id
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+        thread_id = orig.get('threadId', '')
+        gmail.users().messages().send(userId='me', body={"raw": raw, "threadId": thread_id}).execute()
+
+        return {"messages": [AIMessage(content=f"↩️ **회신 메일이 발송되었습니다!**\n\n- **받는사람:** {to_addr}\n- **제목:** {subject}\n\n---\n\n{reply_body_text}")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ EMAIL_REPLY 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 회신 처리 중 오류: {str(e)}")]}
+
 
 def calendar_read_node(state: AgentState):
     print("📅 [CALENDAR_READ] 구글 캘린더 일정을 조회하는 중...")
@@ -1125,6 +1399,95 @@ def task_write_node(state: AgentState):
         print(f"⚠️ Tasks 등록 에러: {str(e)}")
         return {"messages": [AIMessage(content=f"⚠️ 할 일 등록 중 오류가 발생했습니다: {str(e)}")]}
 
+
+def task_action_node(state: AgentState):
+    print("✅ [TASK_ACTION] 할 일 작업(완료/수정/삭제) 처리 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    action_prompt = f"""
+현재 날짜: {datetime.datetime.now().strftime('%Y-%m-%d')}
+사용자 요청: {user_input}
+
+수행할 작업(action)을 결정하세요:
+- complete: 완료 처리
+- delete: 삭제
+- update: 제목/마감일/메모 수정
+
+search_title: 찾을 할일 제목 키워드
+action: complete / delete / update 중 하나
+new_title: 수정 시 새 제목 (수정 아니면 빈 문자열)
+new_due: 수정 시 새 마감일 YYYY-MM-DD (없으면 빈 문자열)
+new_notes: 수정 시 새 메모 (없으면 빈 문자열)
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=action_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=TaskActionSchema,
+            ),
+        )
+        data = TaskActionSchema(**json.loads(response.text))
+        tasks_service = get_workspace_service('tasks', 'v1', user_email)
+
+        task_lists = tasks_service.tasklists().list().execute()
+        all_tasks = []
+        for tl in task_lists.get('items', []):
+            tl_id = tl['id']
+            tl_title = tl.get('title', '')
+            result = tasks_service.tasks().list(tasklist=tl_id, showCompleted=False).execute()
+            for t in result.get('items', []):
+                t['_tasklist_id'] = tl_id
+                t['_tasklist_title'] = tl_title
+                all_tasks.append(t)
+
+        keyword = data.search_title.strip().lower()
+        matched = [t for t in all_tasks if keyword in t.get('title', '').lower()] if keyword else all_tasks[:5]
+
+        if not matched:
+            return {"messages": [AIMessage(content=f"⚠️ 할 일 목록에서 **'{data.search_title}'**을(를) 찾지 못했습니다.\n\n현재 진행 중인 할 일 키워드를 더 정확히 알려주세요.")]}
+
+        task = matched[0]
+        task_id = task['id']
+        tasklist_id = task['_tasklist_id']
+        task_title = task.get('title', '')
+
+        if data.action == 'complete':
+            tasks_service.tasks().patch(tasklist=tasklist_id, task=task_id, body={'status': 'completed'}).execute()
+            return {"messages": [AIMessage(content=f"✅ **'{task_title}'** 할 일을 완료 처리했습니다!")]}
+        elif data.action == 'delete':
+            tasks_service.tasks().delete(tasklist=tasklist_id, task=task_id).execute()
+            return {"messages": [AIMessage(content=f"🗑️ **'{task_title}'** 할 일을 삭제했습니다.")]}
+        elif data.action == 'update':
+            patch_body = {}
+            if data.new_title:
+                patch_body['title'] = data.new_title
+            if data.new_due:
+                patch_body['due'] = data.new_due + "T00:00:00.000Z"
+            if data.new_notes:
+                patch_body['notes'] = data.new_notes
+            if not patch_body:
+                return {"messages": [AIMessage(content="⚠️ 수정할 내용을 파악하지 못했습니다. 새 제목, 마감일 또는 메모를 알려주세요.")]}
+            tasks_service.tasks().patch(tasklist=tasklist_id, task=task_id, body=patch_body).execute()
+            changed = []
+            if data.new_title:
+                changed.append(f"제목: {data.new_title}")
+            if data.new_due:
+                changed.append(f"마감일: {data.new_due}")
+            if data.new_notes:
+                changed.append(f"메모: {data.new_notes}")
+            return {"messages": [AIMessage(content=f"✏️ **'{task_title}'** 할 일을 수정했습니다.\n\n변경 내용: {', '.join(changed)}")]}
+        else:
+            return {"messages": [AIMessage(content=f"⚠️ 작업 유형을 파악하지 못했습니다. 완료/삭제/수정 중 어떤 작업을 원하시는지 명확히 알려주세요.")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ TASK_ACTION 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 할 일 작업 중 오류: {str(e)}")]}
+
+
 def calendar_rsvp_node(state: AgentState):
     print("📅 [CALENDAR_RSVP] 미응답 캘린더 초대 일정 참석 처리 중...")
     user_input = get_last_human_input(state)
@@ -1200,6 +1563,322 @@ def calendar_rsvp_node(state: AgentState):
         return {"messages": [AIMessage(content=f"⚠️ 참석 처리 중 오류가 발생했습니다: {str(e)}")]}
 
 
+def calendar_delete_node(state: AgentState):
+    print("🗑️ [CALENDAR_DELETE] 캘린더 일정 삭제 처리 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    now = datetime.datetime.now()
+    parse_prompt = f"""
+현재 날짜: {now.strftime('%Y-%m-%d')}
+사용자 요청: {user_input}
+삭제할 일정의 키워드(search_query)와 날짜(target_year, target_month, target_day)를 추출하세요.
+날짜가 명확하지 않으면 오늘 날짜를 사용하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=parse_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CalendarDeleteSchema,
+            ),
+        )
+        data = CalendarDeleteSchema(**json.loads(response.text))
+        cal = get_workspace_service('calendar', 'v3', user_email)
+
+        target_date = datetime.date(data.target_year, data.target_month, data.target_day)
+        time_min = datetime.datetime.combine(target_date, datetime.time.min).isoformat() + 'Z'
+        time_max = datetime.datetime.combine(target_date + datetime.timedelta(days=7), datetime.time.min).isoformat() + 'Z'
+
+        events_result = cal.events().list(
+            calendarId='primary', timeMin=time_min, timeMax=time_max,
+            singleEvents=True, orderBy='startTime', maxResults=20
+        ).execute()
+        events = events_result.get('items', [])
+
+        keyword = data.search_query.strip().lower()
+        matched = [e for e in events if keyword in e.get('summary', '').lower()] if keyword else events[:3]
+
+        if not matched:
+            return {"messages": [AIMessage(content=f"⚠️ 삭제할 일정을 찾지 못했습니다.\n\n검색어: '{data.search_query}'\n날짜 범위: {target_date} 전후 7일")]}
+
+        if len(matched) > 1:
+            event_list = "\n".join(f"- {e.get('summary', '제목없음')} ({e['start'].get('dateTime', e['start'].get('date', ''))[:16]})" for e in matched[:5])
+            return {"messages": [AIMessage(content=f"⚠️ **{len(matched)}개**의 일정이 검색되었습니다. 더 구체적인 일정 이름이나 날짜를 알려주세요.\n\n{event_list}")]}
+
+        event = matched[0]
+        event_title = event.get('summary', '제목없음')
+        event_time = event['start'].get('dateTime', event['start'].get('date', ''))[:16]
+        cal.events().delete(calendarId='primary', eventId=event['id']).execute()
+        return {"messages": [AIMessage(content=f"🗑️ **'{event_title}'** 일정이 삭제되었습니다.\n\n- 삭제된 일정: {event_title}\n- 일정 시간: {event_time}")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ CALENDAR_DELETE 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 일정 삭제 중 오류: {str(e)}")]}
+
+
+def calendar_update_node(state: AgentState):
+    print("✏️ [CALENDAR_UPDATE] 캘린더 일정 수정 처리 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    now = datetime.datetime.now()
+    parse_prompt = f"""
+현재 날짜: {now.strftime('%Y-%m-%d')}
+사용자 요청: {user_input}
+수정할 일정의 검색어(search_query)와 기존 날짜(target_year, target_month, target_day),
+새 제목(new_title, 변경 없으면 빈 문자열), 새 날짜/시간(new_year, new_month, new_day, new_start_hour, new_start_minute, new_end_hour, new_end_minute),
+추가 참석자(attendees_add, 이메일 쉼표 구분, 없으면 빈 문자열)를 추출하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=parse_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CalendarUpdateSchema,
+            ),
+        )
+        data = CalendarUpdateSchema(**json.loads(response.text))
+        cal = get_workspace_service('calendar', 'v3', user_email)
+
+        target_date = datetime.date(data.target_year, data.target_month, data.target_day)
+        time_min = datetime.datetime.combine(target_date - datetime.timedelta(days=1), datetime.time.min).isoformat() + 'Z'
+        time_max = datetime.datetime.combine(target_date + datetime.timedelta(days=7), datetime.time.min).isoformat() + 'Z'
+
+        events_result = cal.events().list(
+            calendarId='primary', timeMin=time_min, timeMax=time_max,
+            singleEvents=True, orderBy='startTime', maxResults=20
+        ).execute()
+        events = events_result.get('items', [])
+
+        keyword = data.search_query.strip().lower()
+        matched = [e for e in events if keyword in e.get('summary', '').lower()] if keyword else events[:3]
+
+        if not matched:
+            return {"messages": [AIMessage(content=f"⚠️ 수정할 일정을 찾지 못했습니다.\n\n검색어: '{data.search_query}'")]}
+
+        event = matched[0]
+        event_id = event['id']
+        patch_body = {}
+
+        if data.new_title:
+            patch_body['summary'] = data.new_title
+
+        if data.new_year and data.new_month and data.new_day:
+            tz_str = event['start'].get('timeZone', 'Asia/Seoul')
+            new_start = datetime.datetime(data.new_year, data.new_month, data.new_day, data.new_start_hour, data.new_start_minute)
+            new_end = datetime.datetime(data.new_year, data.new_month, data.new_day, data.new_end_hour, data.new_end_minute)
+            patch_body['start'] = {'dateTime': new_start.isoformat(), 'timeZone': tz_str}
+            patch_body['end'] = {'dateTime': new_end.isoformat(), 'timeZone': tz_str}
+
+        if data.attendees_add:
+            existing_attendees = event.get('attendees', [])
+            new_emails = [e.strip() for e in data.attendees_add.split(',') if e.strip()]
+            existing_emails = {a['email'] for a in existing_attendees}
+            for em in new_emails:
+                if em not in existing_emails:
+                    existing_attendees.append({'email': em})
+            patch_body['attendees'] = existing_attendees
+
+        if not patch_body:
+            return {"messages": [AIMessage(content="⚠️ 수정할 내용을 파악하지 못했습니다. 변경할 제목, 시간, 또는 참석자를 알려주세요.")]}
+
+        cal.events().patch(calendarId='primary', eventId=event_id, body=patch_body, sendUpdates='all').execute()
+
+        orig_title = event.get('summary', '제목없음')
+        changes = []
+        if data.new_title:
+            changes.append(f"제목: {orig_title} → {data.new_title}")
+        if 'start' in patch_body:
+            changes.append(f"시간: {patch_body['start']['dateTime'][:16]}")
+        if data.attendees_add:
+            changes.append(f"참석자 추가: {data.attendees_add}")
+        return {"messages": [AIMessage(content=f"✏️ **'{orig_title}'** 일정이 수정되었습니다!\n\n" + "\n".join(f"- {c}" for c in changes))]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ CALENDAR_UPDATE 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 일정 수정 중 오류: {str(e)}")]}
+
+
+def calendar_free_node(state: AgentState):
+    print("🕐 [CALENDAR_FREE] 일정 여유 시간 조회 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    now = datetime.datetime.now()
+    parse_prompt = f"""
+현재 날짜: {now.strftime('%Y-%m-%d')}
+사용자 요청: {user_input}
+조회할 기간의 시작(startYear, startMonth, startDay)과 끝(endYear, endMonth, endDay)을 추출하세요.
+기간이 명확하지 않으면 오늘부터 7일간으로 설정하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=parse_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CalendarFreeBusySchema,
+            ),
+        )
+        data = CalendarFreeBusySchema(**json.loads(response.text))
+        cal = get_workspace_service('calendar', 'v3', user_email)
+
+        time_min = datetime.datetime(data.startYear, data.startMonth, data.startDay, 0, 0).isoformat() + '+09:00'
+        time_max = datetime.datetime(data.endYear, data.endMonth, data.endDay, 23, 59).isoformat() + '+09:00'
+
+        freebusy_result = cal.freebusy().query(body={
+            "timeMin": time_min, "timeMax": time_max,
+            "timeZone": "Asia/Seoul",
+            "items": [{"id": "primary"}]
+        }).execute()
+
+        busy_periods = freebusy_result.get('calendars', {}).get('primary', {}).get('busy', [])
+
+        start_date = datetime.date(data.startYear, data.startMonth, data.startDay)
+        end_date = datetime.date(data.endYear, data.endMonth, data.endDay)
+
+        busy_prompt = f"""
+사용자의 요청: {user_input}
+조회 기간: {start_date} ~ {end_date}
+바쁜 시간대 (KST 기준):
+{chr(10).join(f"- {b['start'][:16]} ~ {b['end'][:16]}" for b in busy_periods) if busy_periods else "없음"}
+
+이 정보를 바탕으로 업무시간(09:00~18:00) 기준 여유 시간대를 정리하고,
+미팅 가능한 시간대를 추천해 주세요. 한국어로 친절하게 안내해 주세요.
+"""
+        ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=busy_prompt).text
+        return {"messages": [AIMessage(content=f"🕐 **일정 여유 시간 분석** ({start_date} ~ {end_date})\n\n{ai_response}")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ CALENDAR_FREE 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 여유 시간 조회 중 오류: {str(e)}")]}
+
+
+def drive_search_node(state: AgentState):
+    print("📁 [DRIVE_SEARCH] Google Drive 파일 검색 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    search_prompt = f"""
+사용자 요청: {user_input}
+구글 드라이브에서 검색할 파일명 키워드(query), 최대 결과 수(max_results, 기본 10),
+파일 유형(file_type: doc/sheet/slide/pdf/folder/all 중 하나)을 추출하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=DriveSearchSchema,
+            ),
+        )
+        data = DriveSearchSchema(**json.loads(response.text))
+        drive = get_workspace_service('drive', 'v3', user_email)
+
+        mime_map = {
+            'doc': 'application/vnd.google-apps.document',
+            'sheet': 'application/vnd.google-apps.spreadsheet',
+            'slide': 'application/vnd.google-apps.presentation',
+            'pdf': 'application/pdf',
+            'folder': 'application/vnd.google-apps.folder',
+        }
+        q_parts = []
+        if data.query:
+            q_parts.append(f"name contains '{data.query}'")
+        if data.file_type and data.file_type != 'all' and data.file_type in mime_map:
+            q_parts.append(f"mimeType = '{mime_map[data.file_type]}'")
+        q_parts.append("trashed = false")
+        q_str = " and ".join(q_parts)
+
+        results = drive.files().list(
+            q=q_str,
+            pageSize=min(data.max_results, 20),
+            fields="files(id, name, mimeType, modifiedTime, owners, webViewLink)",
+            orderBy="modifiedTime desc"
+        ).execute()
+        files = results.get('files', [])
+
+        if not files:
+            return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과가 없습니다.**\n\n검색어: '{data.query}'")]}
+
+        type_label = {'application/vnd.google-apps.document': '📄 문서', 'application/vnd.google-apps.spreadsheet': '📊 스프레드시트',
+                      'application/vnd.google-apps.presentation': '📑 프레젠테이션', 'application/pdf': '📋 PDF',
+                      'application/vnd.google-apps.folder': '📁 폴더'}
+        file_lines = []
+        for f in files:
+            icon = type_label.get(f.get('mimeType', ''), '📄')
+            modified = f.get('modifiedTime', '')[:10]
+            link = f.get('webViewLink', '')
+            file_lines.append(f"{icon} [{f['name']}]({link}) — 수정일: {modified}")
+
+        return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과** ({len(files)}건)\n\n" + "\n".join(file_lines))]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ DRIVE_SEARCH 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 드라이브 검색 중 오류: {str(e)}")]}
+
+
+def drive_list_node(state: AgentState):
+    print("📂 [DRIVE_LIST] Google Drive 최근 파일 목록 조회 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    try:
+        drive = get_workspace_service('drive', 'v3', user_email)
+
+        shared_results = drive.files().list(
+            q="sharedWithMe = true and trashed = false",
+            pageSize=10,
+            fields="files(id, name, mimeType, modifiedTime, owners, webViewLink, sharingUser)",
+            orderBy="modifiedTime desc"
+        ).execute()
+        shared_files = shared_results.get('files', [])
+
+        recent_results = drive.files().list(
+            q="'me' in owners and trashed = false",
+            pageSize=10,
+            fields="files(id, name, mimeType, modifiedTime, webViewLink)",
+            orderBy="modifiedTime desc"
+        ).execute()
+        recent_files = recent_results.get('files', [])
+
+        type_label = {'application/vnd.google-apps.document': '📄', 'application/vnd.google-apps.spreadsheet': '📊',
+                      'application/vnd.google-apps.presentation': '📑', 'application/pdf': '📋',
+                      'application/vnd.google-apps.folder': '📁'}
+
+        shared_lines = []
+        for f in shared_files[:5]:
+            icon = type_label.get(f.get('mimeType', ''), '📄')
+            sharer = f.get('sharingUser', {}).get('displayName', '알수없음')
+            link = f.get('webViewLink', '')
+            shared_lines.append(f"{icon} [{f['name']}]({link}) — 공유자: {sharer}")
+
+        recent_lines = []
+        for f in recent_files[:5]:
+            icon = type_label.get(f.get('mimeType', ''), '📄')
+            modified = f.get('modifiedTime', '')[:10]
+            link = f.get('webViewLink', '')
+            recent_lines.append(f"{icon} [{f['name']}]({link}) — {modified}")
+
+        shared_section = "\n".join(shared_lines) if shared_lines else "공유받은 파일이 없습니다."
+        recent_section = "\n".join(recent_lines) if recent_lines else "최근 파일이 없습니다."
+
+        return {"messages": [AIMessage(content=f"📂 **Google Drive 현황**\n\n**공유받은 파일 (최근 5건)**\n{shared_section}\n\n**내 파일 (최근 수정순 5건)**\n{recent_section}")]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ DRIVE_LIST 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 드라이브 목록 조회 중 오류: {str(e)}")]}
+
+
 def dispatcher_node(state: AgentState):
     """pending_intents 큐에서 다음 인텐트를 꺼내 current_intent에 세팅"""
     pending = list(state.get("pending_intents") or [])
@@ -1252,12 +1931,21 @@ workflow.add_node("GENERAL_Node", general_node)
 workflow.add_node("BQ_Node", bq_node)
 workflow.add_node("BQ_Corrector_Node", bq_corrector_node)
 workflow.add_node("EMAIL_WRITE_Node", email_write_node)
+workflow.add_node("EMAIL_SEND_Node", email_send_node)
+workflow.add_node("EMAIL_SEARCH_Node", email_search_node)
+workflow.add_node("EMAIL_REPLY_Node", email_reply_node)
 workflow.add_node("EMAIL_READ_Node", email_read_node)
 workflow.add_node("CALENDAR_WRITE_Node", calendar_write_node)
 workflow.add_node("CALENDAR_READ_Node", calendar_read_node)
 workflow.add_node("CALENDAR_RSVP_Node", calendar_rsvp_node)
+workflow.add_node("CALENDAR_UPDATE_Node", calendar_update_node)
+workflow.add_node("CALENDAR_DELETE_Node", calendar_delete_node)
+workflow.add_node("CALENDAR_FREE_Node", calendar_free_node)
 workflow.add_node("TASK_WRITE_Node", task_write_node)
 workflow.add_node("TASK_READ_Node", task_read_node)
+workflow.add_node("TASK_ACTION_Node", task_action_node)
+workflow.add_node("DRIVE_SEARCH_Node", drive_search_node)
+workflow.add_node("DRIVE_LIST_Node", drive_list_node)
 
 
 # START → Supervisor → 첫 번째 액션 노드 (current_intent 기준 직접 라우팅)
@@ -1269,19 +1957,30 @@ INTENT_NODE_MAP = {
     "BQ": "BQ_Node",
     "GENERAL": "GENERAL_Node",
     "EMAIL_WRITE": "EMAIL_WRITE_Node",
+    "EMAIL_SEND": "EMAIL_SEND_Node",
+    "EMAIL_SEARCH": "EMAIL_SEARCH_Node",
+    "EMAIL_REPLY": "EMAIL_REPLY_Node",
     "EMAIL_READ": "EMAIL_READ_Node",
     "CALENDAR_WRITE": "CALENDAR_WRITE_Node",
     "CALENDAR_READ": "CALENDAR_READ_Node",
     "CALENDAR_RSVP": "CALENDAR_RSVP_Node",
+    "CALENDAR_UPDATE": "CALENDAR_UPDATE_Node",
+    "CALENDAR_DELETE": "CALENDAR_DELETE_Node",
+    "CALENDAR_FREE": "CALENDAR_FREE_Node",
     "TASK_WRITE": "TASK_WRITE_Node",
     "TASK_READ": "TASK_READ_Node",
+    "TASK_ACTION": "TASK_ACTION_Node",
+    "DRIVE_SEARCH": "DRIVE_SEARCH_Node",
+    "DRIVE_LIST": "DRIVE_LIST_Node",
 }
 
 def route_after_supervisor(state: AgentState) -> Literal[
     "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
-    "EMAIL_WRITE_Node", "EMAIL_READ_Node",
+    "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
-    "TASK_WRITE_Node", "TASK_READ_Node", "Aggregator_Node"
+    "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
+    "TASK_WRITE_Node", "TASK_READ_Node", "TASK_ACTION_Node",
+    "DRIVE_SEARCH_Node", "DRIVE_LIST_Node", "Aggregator_Node"
 ]:
     return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
 
@@ -1293,12 +1992,21 @@ workflow.add_conditional_edges(
         "BQ_Node": "BQ_Node",
         "GENERAL_Node": "GENERAL_Node",
         "EMAIL_WRITE_Node": "EMAIL_WRITE_Node",
+        "EMAIL_SEND_Node": "EMAIL_SEND_Node",
+        "EMAIL_SEARCH_Node": "EMAIL_SEARCH_Node",
+        "EMAIL_REPLY_Node": "EMAIL_REPLY_Node",
         "EMAIL_READ_Node": "EMAIL_READ_Node",
         "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
         "CALENDAR_RSVP_Node": "CALENDAR_RSVP_Node",
+        "CALENDAR_UPDATE_Node": "CALENDAR_UPDATE_Node",
+        "CALENDAR_DELETE_Node": "CALENDAR_DELETE_Node",
+        "CALENDAR_FREE_Node": "CALENDAR_FREE_Node",
         "TASK_WRITE_Node": "TASK_WRITE_Node",
         "TASK_READ_Node": "TASK_READ_Node",
+        "TASK_ACTION_Node": "TASK_ACTION_Node",
+        "DRIVE_SEARCH_Node": "DRIVE_SEARCH_Node",
+        "DRIVE_LIST_Node": "DRIVE_LIST_Node",
         "Aggregator_Node": "Aggregator_Node",
     }
 )
@@ -1306,9 +2014,11 @@ workflow.add_conditional_edges(
 # 액션 노드 완료 후 Dispatcher: pending_intents가 남아있으면 다음 노드로, 없으면 Aggregator로
 def route_after_dispatcher(state: AgentState) -> Literal[
     "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
-    "EMAIL_WRITE_Node", "EMAIL_READ_Node",
+    "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
-    "TASK_WRITE_Node", "TASK_READ_Node", "Aggregator_Node"
+    "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
+    "TASK_WRITE_Node", "TASK_READ_Node", "TASK_ACTION_Node",
+    "DRIVE_SEARCH_Node", "DRIVE_LIST_Node", "Aggregator_Node"
 ]:
     return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
 
@@ -1320,12 +2030,21 @@ workflow.add_conditional_edges(
         "BQ_Node": "BQ_Node",
         "GENERAL_Node": "GENERAL_Node",
         "EMAIL_WRITE_Node": "EMAIL_WRITE_Node",
+        "EMAIL_SEND_Node": "EMAIL_SEND_Node",
+        "EMAIL_SEARCH_Node": "EMAIL_SEARCH_Node",
+        "EMAIL_REPLY_Node": "EMAIL_REPLY_Node",
         "EMAIL_READ_Node": "EMAIL_READ_Node",
         "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
         "CALENDAR_RSVP_Node": "CALENDAR_RSVP_Node",
+        "CALENDAR_UPDATE_Node": "CALENDAR_UPDATE_Node",
+        "CALENDAR_DELETE_Node": "CALENDAR_DELETE_Node",
+        "CALENDAR_FREE_Node": "CALENDAR_FREE_Node",
         "TASK_WRITE_Node": "TASK_WRITE_Node",
         "TASK_READ_Node": "TASK_READ_Node",
+        "TASK_ACTION_Node": "TASK_ACTION_Node",
+        "DRIVE_SEARCH_Node": "DRIVE_SEARCH_Node",
+        "DRIVE_LIST_Node": "DRIVE_LIST_Node",
         "Aggregator_Node": "Aggregator_Node",
     }
 )
@@ -1349,11 +2068,20 @@ workflow.add_edge("Reasoner", "Dispatcher")
 workflow.add_edge("GENERAL_Node", "Dispatcher")
 workflow.add_edge("EMAIL_WRITE_Node", "Dispatcher")
 workflow.add_edge("EMAIL_READ_Node", "Dispatcher")
+workflow.add_edge("EMAIL_SEND_Node", "Dispatcher")
+workflow.add_edge("EMAIL_SEARCH_Node", "Dispatcher")
+workflow.add_edge("EMAIL_REPLY_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_WRITE_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_READ_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_RSVP_Node", "Dispatcher")
+workflow.add_edge("CALENDAR_UPDATE_Node", "Dispatcher")
+workflow.add_edge("CALENDAR_DELETE_Node", "Dispatcher")
+workflow.add_edge("CALENDAR_FREE_Node", "Dispatcher")
 workflow.add_edge("TASK_WRITE_Node", "Dispatcher")
 workflow.add_edge("TASK_READ_Node", "Dispatcher")
+workflow.add_edge("TASK_ACTION_Node", "Dispatcher")
+workflow.add_edge("DRIVE_SEARCH_Node", "Dispatcher")
+workflow.add_edge("DRIVE_LIST_Node", "Dispatcher")
 
 # Aggregator → END
 workflow.add_edge("Aggregator_Node", END)
