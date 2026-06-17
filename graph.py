@@ -333,6 +333,17 @@ def reasoner_node(state: AgentState):
         docs = "\n\n---\n\n".join(url_to_block[u] for u in url_order)
         print(f"🔗 [Reasoner] 청크 병합: {len(raw_blocks)}개 → {len(url_order)}개 고유 문서")
 
+    # 프롬프트용: 문서에 명시적 번호 부여 → LLM이 총 문서 수와 각 번호를 정확히 인지
+    doc_blocks_list = re.split(r'\n\n---\n\n', docs) if docs else []
+    num_docs = len(doc_blocks_list)
+    if num_docs > 0:
+        numbered_docs = "\n\n---\n\n".join(
+            f"[문서 {i}]\n{block.strip()}"
+            for i, block in enumerate(doc_blocks_list, 1)
+        )
+    else:
+        numbered_docs = docs or ""
+
     extracted_sources = []
     if docs:
         # ① BQ hybrid search 포맷 (rag_node.py): 문서 블록을 --- 구분자로 분리 후 각 블록에서 추출
@@ -401,7 +412,10 @@ def reasoner_node(state: AgentState):
     10. 답변을 모두 작성한 후, 맨 마지막 줄에 사용자가 이어서 궁금해할 만한 '추천 질문' 3가지를 반드시 "|||SUGGESTIONS|||" 이라는 구분자 뒤에 줄바꿈으로 구분하여 작성하세요.
     
     11. [🔒 출처 인용 규칙]
-    - 검색된 규정 문서는 제공된 순서대로 [1], [2], [3] 번호가 부여됩니다. 해당 문서 내용을 인용할 때 반드시 해당 번호를 문장 끝에 표기하세요. (예: "케이블을 재연결하세요. [2]")
+    - 아래 검색된 규정 문서는 총 {num_docs}개입니다. 각 문서는 [문서 1], [문서 2], ... 로 표시됩니다.
+    - 문서 내용을 인용할 때 반드시 해당 번호만 문장 끝에 표기하세요. (예: [1], [2])
+    - ⚠️ 절대 준수: 문서가 {num_docs}개이므로 [1]~[{num_docs}] 번호만 사용 가능합니다. [{num_docs + 1}] 이상은 존재하지 않으므로 절대 사용하지 마세요.
+    - 문서 내의 여러 항목이 동일한 문서에서 왔더라도 번호를 나눠 쓰지 마세요. 동일 문서라면 항상 같은 번호를 사용하세요.
     - 절대로 사용자 화면에 "주요 출처", "참조 문서" 같은 텍스트 리스트를 직접 출력하지 마십시오. (하단 카드로 자동 표시됩니다.)
     - 답변 맨 마지막 줄(|||SUGGESTIONS||| 바로 위)에 아래 포맷으로 출처 JSON을 사출하세요. 이때 검색에서 제공된 모든 문서를 빠짐없이 포함하세요 — 임의로 걸러내지 마세요.
     - 포맷 규격:
@@ -410,13 +424,21 @@ def reasoner_node(state: AgentState):
     [📋 도표 시각화 지침]
     - 수치·비율·통계가 포함된 내용은 마크다운 표(| 헤더 | 헤더 | ... |)로 정리하면 가독성이 높아집니다.
     - [CHART_DATA] 차트 JSON은 RAG 답변에서 절대 사출하지 마세요. 차트는 BigQuery 정형데이터 분석 전용입니다.
-    
-    [검색된 규정]
-    {docs}
+
+    [검색된 규정] (총 {num_docs}개 문서)
+    {numbered_docs}
     """
     
     response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
     final_response_text = response.text.strip()
+
+    # 유효 범위 초과 인용번호 제거 (예: 문서 1개인데 [2][3] 사용 시 자동 제거)
+    if num_docs > 0:
+        final_response_text = re.sub(
+            r'\[(\d+)\]',
+            lambda m: '' if int(m.group(1)) > num_docs else m.group(0),
+            final_response_text
+        )
 
     print("🛡️ [Model Armor] 생성된 AI 응답문 유해성 및 헤이트 스피치 실시간 교차 검증 중...")
     try:
