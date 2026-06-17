@@ -1128,9 +1128,17 @@
       }
 
       lucide.createIcons();
+
+      // 답변 렌더 완료 후: 새 메시지 버블 상단으로 스크롤 (하단 고정 제거)
       const chatView = document.getElementById('chat-view');
-      if (chatView) {
-        chatView.scrollTo({ top: chatView.scrollHeight, behavior: 'smooth' });
+      const msgBubble = document.getElementById(msgId);
+      if (chatView && msgBubble) {
+        // msgBubble → .max-w-[90%] wrapper → .flex.gap-4 message row
+        const msgRow = msgBubble.parentElement?.parentElement;
+        if (msgRow) {
+          const targetTop = chatView.scrollTop + msgRow.getBoundingClientRect().top - chatView.getBoundingClientRect().top - 16;
+          chatView.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+        }
       }
     }
 
