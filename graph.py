@@ -309,33 +309,31 @@ def reasoner_node(state: AgentState):
     
     extracted_sources = []
     if docs:
-        # ① BQ hybrid search 포맷: [문서명]: name\n...[문서URL]: url
-        bq_blocks = re.findall(
-            r'\[문서명\]:\s*(.+?)\n(?:.*?\n)*?\[문서URL\]:\s*(https?://[^\s\n]+)',
-            docs, re.DOTALL
-        )
-        for name, url in bq_blocks:
-            if url not in [s.get('doc_url') for s in extracted_sources]:
-                extracted_sources.append({"doc_name": name.strip(), "doc_url": url.strip(), "links": ""})
+        # ① BQ hybrid search 포맷 (rag_node.py): 문서 블록을 --- 구분자로 분리 후 각 블록에서 추출
+        # [문서명]: xxx / [문서URL]: url 형태이며, 라인 시작 기준으로 안전하게 파싱
+        doc_blocks = re.split(r'\n\n---\n\n', docs)
+        for block in doc_blocks:
+            name_m = re.search(r'^\[문서명\]:\s*(.+)', block, re.MULTILINE)
+            url_m  = re.search(r'^\[문서URL\]:\s*(https?://\S+)', block, re.MULTILINE)
+            if name_m and url_m:
+                n, u = name_m.group(1).strip(), url_m.group(1).strip()
+                if u not in [s.get('doc_url') for s in extracted_sources]:
+                    extracted_sources.append({"doc_name": n, "doc_url": u, "links": ""})
 
-        # ② Vertex AI search 포맷: 원본링크: url
-        raw_matches = re.findall(r'원본링크:\s*(https?://[^\s\]\n]+)', docs)
-        for url in raw_matches:
+        # ② Vertex AI search 포맷: [문서 N 원본링크: url]
+        for url in re.findall(r'원본링크:\s*(https?://[^\s\]\n]+)', docs):
             if url not in [s.get('doc_url') for s in extracted_sources]:
                 extracted_sources.append({"doc_name": "사내 규정 지식 파일", "doc_url": url.strip(), "links": ""})
 
         # ③ 마크다운 [name](url) 포맷 (레거시)
-        nested_md_pattern = r'\[((?:\[[^\]]*\]|[^\]\n])+)\]\((https?://[^\s)]+)\)'
-        md_matches = re.findall(nested_md_pattern, docs)
-        for name, url in md_matches:
+        for name, url in re.findall(r'\[((?:\[[^\]]*\]|[^\]\n])+)\]\((https?://[^\s)]+)\)', docs):
             if url not in [s.get('doc_url') for s in extracted_sources]:
                 clean_name = name.replace("원본링크:", "").replace("출처:", "").strip()
                 extracted_sources.append({"doc_name": clean_name, "doc_url": url.strip(), "links": ""})
 
         # ④ 최후 fallback: URL만 있는 경우
-        if not extracted_sources and "http" in docs:
-            all_urls = re.findall(r'(https?://[^\s\n\)]+)', docs)
-            for idx, url in enumerate(all_urls):
+        if not extracted_sources:
+            for idx, url in enumerate(re.findall(r'(https?://[^\s\n\)]+)', docs)):
                 if url not in [s.get('doc_url') for s in extracted_sources]:
                     extracted_sources.append({"doc_name": f"참고 사규 지침서 {idx+1}", "doc_url": url.strip(), "links": ""})
 

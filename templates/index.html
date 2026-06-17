@@ -877,7 +877,8 @@
         targetResults.forEach(item => {
           const dUrl = item.doc_url || item.url || "#";
           const dName = item.doc_name || item.name || "";
-          if (!combinedResults.some(c => c.doc_url === dUrl && c.doc_name === dName)) {
+          // URL 기준으로만 중복 제거 (이름이 달라도 같은 문서면 스킵)
+          if (!combinedResults.some(c => c.doc_url === dUrl)) {
             combinedResults.push({ doc_name: dName, doc_url: dUrl, links: item.links || "" });
           }
         });
