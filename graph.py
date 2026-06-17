@@ -187,14 +187,20 @@ def supervisor_node(state: AgentState):
     질문: {user_input}
     """
 
-    response = ai_client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=RouteDecision,
-        ),
-    )
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=RouteDecision,
+            ),
+        )
+    except Exception as e:
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            print(f"⚠️ [Supervisor] Gemini 쿼터 초과 (429) — 임시 응답 반환")
+            raise ValueError("RESOURCE_EXHAUSTED")
+        raise
     decision_data = json.loads(response.text)
     intents = decision_data.get("intents", ["GENERAL"])
     if not intents:

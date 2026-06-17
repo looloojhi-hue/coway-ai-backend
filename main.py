@@ -222,8 +222,9 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
     try:
         final_state = coway_agent_app.invoke(initial_state, config=config)
     except Exception as invoke_err:
-        if "AUTH_REQUIRED_FOR:" in str(invoke_err):
-            auth_email = str(invoke_err).split("AUTH_REQUIRED_FOR:")[-1].strip()
+        err_str = str(invoke_err)
+        if "AUTH_REQUIRED_FOR:" in err_str:
+            auth_email = err_str.split("AUTH_REQUIRED_FOR:")[-1].strip()
             print(f"🔐 [OAuth 필요] 워크스페이스 연동 인증 요청 → {auth_email}")
             return {
                 "summary": {"summaryText": "구글 워크스페이스 연동을 위해 인증이 필요합니다. 잠시 후 인증 창이 열립니다."},
@@ -233,6 +234,17 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
                 "results": [],
                 "links": "[]",
                 "suggestions": [],
+                "sessionId": session_id,
+            }
+        if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+            print(f"⚠️ [API 쿼터 초과] Gemini 429 — 사용자에게 안내 메시지 반환")
+            return {
+                "summary": {"summaryText": "현재 AI 서버 요청이 집중되어 일시적으로 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."},
+                "auth_required": False,
+                "chartData": None,
+                "results": [],
+                "links": "[]",
+                "suggestions": ["잠시 후 다시 질문해 주세요", "다른 질문을 먼저 시도해 보세요"],
                 "sessionId": session_id,
             }
         raise
