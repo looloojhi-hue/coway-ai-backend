@@ -309,27 +309,37 @@ def reasoner_node(state: AgentState):
     
     extracted_sources = []
     if docs:
-        # 🗄️ GCP knowledge_master 컬럼 필드 규격(doc_name, doc_url, links)과 1:1 결합하도록 사전 정렬
-        # 🎯 [정해인 프로 지정 가드 - 중첩 대괄호 파일명 완벽 해독 정규식]
-        # 파일명 내부에 [인사팀], (총무팀) 등 온갖 괄호 특수문자가 겹쳐있어도 
-        # 진짜 마크다운 종착점인 ](http) 구조만 완벽하게 저격하여 유실 없이 실명을 인출합니다.
+        # ① BQ hybrid search 포맷: [문서명]: name\n...[문서URL]: url
+        bq_blocks = re.findall(
+            r'\[문서명\]:\s*(.+?)\n(?:.*?\n)*?\[문서URL\]:\s*(https?://[^\s\n]+)',
+            docs, re.DOTALL
+        )
+        for name, url in bq_blocks:
+            if url not in [s.get('doc_url') for s in extracted_sources]:
+                extracted_sources.append({"doc_name": name.strip(), "doc_url": url.strip(), "links": ""})
+
+        # ② Vertex AI search 포맷: 원본링크: url
+        raw_matches = re.findall(r'원본링크:\s*(https?://[^\s\]\n]+)', docs)
+        for url in raw_matches:
+            if url not in [s.get('doc_url') for s in extracted_sources]:
+                extracted_sources.append({"doc_name": "사내 규정 지식 파일", "doc_url": url.strip(), "links": ""})
+
+        # ③ 마크다운 [name](url) 포맷 (레거시)
         nested_md_pattern = r'\[((?:\[[^\]]*\]|[^\]\n])+)\]\((https?://[^\s)]+)\)'
         md_matches = re.findall(nested_md_pattern, docs)
         for name, url in md_matches:
             if url not in [s.get('doc_url') for s in extracted_sources]:
                 clean_name = name.replace("원본링크:", "").replace("출처:", "").strip()
                 extracted_sources.append({"doc_name": clean_name, "doc_url": url.strip(), "links": ""})
-        
-        raw_matches = re.findall(r'원본링크:\s*(https?://[^\s\]\n]+)', docs)
-        for url in raw_matches:
-            if url not in [s.get('doc_url') for s in extracted_sources]:
-                extracted_sources.append({"doc_name": "사내 규정 지식 파일", "doc_url": url.strip(), "links": ""})
-                
+
+        # ④ 최후 fallback: URL만 있는 경우
         if not extracted_sources and "http" in docs:
             all_urls = re.findall(r'(https?://[^\s\n\)]+)', docs)
             for idx, url in enumerate(all_urls):
                 if url not in [s.get('doc_url') for s in extracted_sources]:
                     extracted_sources.append({"doc_name": f"참고 사규 지침서 {idx+1}", "doc_url": url.strip(), "links": ""})
+
+    print(f"📎 [Reasoner] 추출된 출처 {len(extracted_sources)}개: {[s['doc_name'] for s in extracted_sources]}")
 
     print("🛡️ [Model Armor] 프롬프트 인젝션 및 탈옥(Jailbreak) 실시간 스캔 중...")
     headers = get_model_armor_headers()
@@ -366,13 +376,11 @@ def reasoner_node(state: AgentState):
     9. 나이 및 연도 연산 시 속으로 명시적인 수식을 세워 오차 없이 정밀 연산하세요.
     10. 답변을 모두 작성한 후, 맨 마지막 줄에 사용자가 이어서 궁금해할 만한 '추천 질문' 3가지를 반드시 "|||SUGGESTIONS|||" 이라는 구분자 뒤에 줄바꿈으로 구분하여 작성하세요.
     
-    11. [🔒 출처 구조화 명세 조항 - 주요 출처 텍스트 출력 절대 금지]
-    - 답변 본문 인용 마킹([1], [2] 등)이 완료된 후, 절대로 사용자 화면에 "주요 출처"나 "🎯 주요 출처" 같은 텍스트 리스트를 직접 출력하지 마십시오. (하단 카드 섹션과 중복되어 UI가 지저분해집니다.)
-    - 대신, 답변 맨 마지막 줄(추천 질문 구분자 |||SUGGESTIONS||| 바로 위)에 반드시 아래의 정확한 JSON 출처 명세 포맷을 [SOURCE_REPORTS] 태그와 함께 한 줄의 순수 JSON 문자열로 사출하십시오. 앞뒤에 백틱기호는 엄격히 금지합니다.
-    - doc_name 필드에는 파일명이나 문서의 진짜 명칭(예: "[인사팀] 코웨이 복리후생 규정_2025.09.01.pdf")을 입력하십시오.
-    - ★ [출처 필터링 엄수] [SOURCE_REPORTS]에는 반드시 본문에서 실제로 인용한([1], [2] 등 마킹) 문서만 포함하세요. 검색은 됐으나 본문에 인용하지 않은 문서는 절대 포함하지 마세요. 관련 내용을 찾지 못해 "찾을 수 없습니다"라고 답한 경우에는 [SOURCE_REPORTS] 자체를 출력하지 마세요.
-
-    포맷 규격:
+    11. [🔒 출처 인용 규칙]
+    - 검색된 규정 문서는 제공된 순서대로 [1], [2], [3] 번호가 부여됩니다. 해당 문서 내용을 인용할 때 반드시 해당 번호를 문장 끝에 표기하세요. (예: "케이블을 재연결하세요. [2]")
+    - 절대로 사용자 화면에 "주요 출처", "참조 문서" 같은 텍스트 리스트를 직접 출력하지 마십시오. (하단 카드로 자동 표시됩니다.)
+    - 답변 맨 마지막 줄(|||SUGGESTIONS||| 바로 위)에 아래 포맷으로 출처 JSON을 사출하세요. 이때 검색에서 제공된 모든 문서를 빠짐없이 포함하세요 — 임의로 걸러내지 마세요.
+    - 포맷 규격:
     [SOURCE_REPORTS] [{{"doc_name": "실제 문서 이름 1", "doc_url": "해당 문서의 구글드라이브 URL"}}, {{"doc_name": "실제 문서 이름 2", "doc_url": "해당 문서의 구글드라이브 URL"}}]
 
     [📋 도표 시각화 지침]

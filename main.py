@@ -272,22 +272,31 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
             "sessionId": session_id,
         }
 
-    # LLM의 [SOURCE_REPORTS]를 1순위로 채우고, 그래프 추출 소스는 미등록 URL에 한해 보완
-    # (역순이었을 때: generic "참고 사규 지침서 N" 이름이 URL을 선점 → LLM의 정확한 파일명이 dedup에 차단되는 버그)
-    source_results = []
-    if parsed_source_data:
-        for ps in parsed_source_data:
-            d_name = ps.get("doc_name") or ps.get("name") or "참조 문서"
-            d_url = ps.get("doc_url") or ps.get("url") or "#"
-            d_links = ps.get("links") or ""
-            source_results.append({"doc_name": d_name, "doc_url": d_url, "links": d_links})
+    # Python이 추출한 소스를 기준으로 (인용 번호 [1][2][3] 순서와 일치)
+    # LLM이 생성한 SOURCE_REPORTS는 doc_name 보완 전용으로만 사용
+    source_results = list(final_state.get("sources", []))
 
-    # LLM이 [SOURCE_REPORTS]를 명시한 경우 그것만 사용 — 미인용 문서가 자동 추가되는 문제 방지
-    if not parsed_source_data:
-        for s in final_state.get("sources", []):
-            s_url = s.get("doc_url", "")
-            if s_url and not any(x.get("doc_url") == s_url for x in source_results):
-                source_results.append(s)
+    # LLM SOURCE_REPORTS로 doc_name 보완 (generic 이름인 경우 LLM의 정확한 이름으로 교체)
+    if parsed_source_data:
+        llm_url_map = {}
+        for ps in parsed_source_data:
+            d_url = ps.get("doc_url") or ps.get("url") or ""
+            d_name = ps.get("doc_name") or ps.get("name") or ""
+            if d_url and d_name:
+                llm_url_map[d_url.strip()] = d_name
+        for sr in source_results:
+            sr_url = sr.get("doc_url", "")
+            if sr_url in llm_url_map and sr.get("doc_name") in ("사내 규정 지식 파일", "", None):
+                sr["doc_name"] = llm_url_map[sr_url]
+        # LLM이 Python이 못 잡은 URL을 추가로 제시한 경우에만 append
+        for ps in parsed_source_data:
+            d_url = (ps.get("doc_url") or ps.get("url") or "").strip()
+            if d_url and not any(s.get("doc_url") == d_url for s in source_results):
+                source_results.append({
+                    "doc_name": ps.get("doc_name") or ps.get("name") or "참조 문서",
+                    "doc_url": d_url,
+                    "links": ps.get("links") or ""
+                })
 
     # top_intent: Supervisor 최초 분류값 (Dispatcher가 "__DONE__"으로 덮어쓴 current_intent 대신 사용)
     intent = final_state.get("top_intent") or final_state.get("current_intent", "GENERAL")
