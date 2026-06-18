@@ -67,12 +67,18 @@ class AgentState(TypedDict):
     sources: list       # 💡 main.py를 거쳐 프론트엔드로 출처 파일 명단을 무결하게 배달할 보관함
     user_info: dict
     top_dept_code: str  # 🎯 낚아챈 부서 코드를 임시 저장할 장부 칸
-    bq_error_log: str   # 🛠️ [Phase 4.3] 빅쿼리 런타임 에러 추적 메모리 칸 추가
-    bq_retry_count: int # 🛠️ [Phase 4.3] 무한 루프 탈출용 재시도 카운터 장부 추가
+    bq_error_log: str   # BQ SQL 에러 추적 (SQL 교정용)
+    bq_retry_count: int # BQ 재시도 카운터 (무한루프 방지)
+    last_failed_intent: str       # 마지막 실패 인텐트 ("BQ", "RAG" 등)
+    last_error_type: str          # 실패 유형: "PERMISSION" | "NOT_FOUND" | "SQL_ERROR" | ""
+    fallback_suggested: bool      # 폴백 제안 중복 방지 플래그
+    awaiting_fallback_query: str  # 폴백 확인 대기 중인 원본 쿼리
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
-    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, EMAIL_SEND, EMAIL_SEARCH, EMAIL_REPLY, CALENDAR_READ, CALENDAR_WRITE, CALENDAR_RSVP, CALENDAR_UPDATE, CALENDAR_DELETE, CALENDAR_FREE, TASK_READ, TASK_WRITE, TASK_ACTION, DRIVE_SEARCH, DRIVE_LIST 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
+    intents: List[str] = Field(description="수행할 작업 목록. 각 항목은 RAG, BQ, GENERAL, EMAIL_READ, EMAIL_WRITE, EMAIL_SEND, EMAIL_SEARCH, EMAIL_REPLY, CALENDAR_READ, CALENDAR_WRITE, CALENDAR_RSVP, CALENDAR_UPDATE, CALENDAR_DELETE, CALENDAR_FREE, TASK_READ, TASK_WRITE, TASK_ACTION, DRIVE_SEARCH, DRIVE_LIST, PEOPLE_SEARCH, SHEET_READ, SHEET_WRITE, DOCS_CREATE 중 하나. 복수 작업 요청 시 순서대로 모두 포함.")
+    confidence: float = Field(description="분류 확신도 0.0~1.0. 명확한 요청은 0.9 이상, 애매한 요청은 0.5 미만.")
+    source_tier: str = Field(description="데이터 소스 계층: 'official'(BQ/RAG 공식 데이터), 'personal'(Drive/Sheets/Docs 개인 파일), 'action'(메일/캘린더/할일 등 액션), 'general'(일반 대화)")
 
 class RefinedQuery(BaseModel):
     query: str = Field(description="명사 위주의 핵심 키워드 조합")
@@ -100,6 +106,8 @@ class CalendarEventSchema(BaseModel):
     startMinute: int
     endHour: int
     endMinute: int
+    attendees: str   # 초대할 참석자 (이름 또는 이메일, 콤마 구분, 없으면 빈 문자열)
+    isOnline: bool   # True: 구글 미트 링크 자동 생성 (온라인 미팅/화상회의/비대면 요청 시)
 
 class TaskSchema(BaseModel):
     title: str
@@ -163,6 +171,23 @@ class DriveSearchSchema(BaseModel):
     max_results: int    # 최대 조회 건수 (1~20)
     file_type: str      # "any" | "doc" | "sheet" | "slide" | "pdf" | "folder"
 
+class PeopleSearchSchema(BaseModel):
+    query: str          # 검색할 임직원 이름, 부서명, 직책 키워드
+    max_results: int    # 최대 조회 건수 (1~10)
+
+class SheetReadSchema(BaseModel):
+    file_name: str      # 스프레드시트 파일 이름 또는 키워드
+    range: str          # 읽을 셀 범위 (예: "Sheet1!A1:E10", 미지정이면 "Sheet1!A1:Z100")
+
+class SheetWriteSchema(BaseModel):
+    file_name: str      # 스프레드시트 파일 이름 또는 키워드
+    sheet_name: str     # 시트 탭 이름 (기본: "Sheet1")
+    row_data: List[str] # 추가할 한 행의 데이터 (컬럼 순서대로)
+
+class DocsCreateSchema(BaseModel):
+    title: str          # 구글 Docs 문서 제목
+    content: str        # 문서 본문 내용 (마크다운 없는 순수 텍스트)
+
 # ====================================================================
 # 🛡️ [개정 완공] 구글 워크스페이스 3-Legged OAuth 자율 토큰 관리 헬퍼 엔진
 # ====================================================================
@@ -215,6 +240,43 @@ def supervisor_node(state: AgentState):
     print("🚦 [Supervisor] 제미나이 3.5가 의도를 파악 중입니다...")
     user_input = get_last_human_input(state)
 
+    # Pre-check 1: BQ 권한 실패 후 Drive 폴백 확인 응답 감지
+    if state.get("fallback_suggested") and state.get("awaiting_fallback_query"):
+        user_input_lower = user_input.strip().lower()
+        if any(kw in user_input_lower for kw in _DRIVE_CONFIRM_KEYWORDS):
+            original_query = state.get("awaiting_fallback_query", user_input)
+            print(f"✅ [Supervisor] BQ 폴백 Drive 확인 응답 감지 → DRIVE_SEARCH (원본 쿼리: {original_query})")
+            return {
+                "current_intent": "DRIVE_SEARCH",
+                "top_intent": "DRIVE_SEARCH",
+                "pending_intents": [],
+                "bq_retry_count": 0,
+                "bq_error_log": "",
+                "last_failed_intent": "",
+                "last_error_type": "",
+                "fallback_suggested": False,
+                "awaiting_fallback_query": "",
+                "sources": []
+            }
+
+    # Pre-check 2: 드라이브 확인 응답 사전 감지
+    confirmed_query = _get_drive_confirmed_query(state)
+    if confirmed_query:
+        next_intent = "DRIVE_LIST" if any(kw in confirmed_query for kw in _DRIVE_LIST_KEYWORDS) else "DRIVE_SEARCH"
+        print(f"✅ [Supervisor] 드라이브 검색 확인 응답 감지 → {next_intent} 직행")
+        return {
+            "current_intent": next_intent,
+            "top_intent": next_intent,
+            "pending_intents": [],
+            "bq_retry_count": 0,
+            "bq_error_log": "",
+            "last_failed_intent": "",
+            "last_error_type": "",
+            "fallback_suggested": False,
+            "awaiting_fallback_query": "",
+            "sources": []
+        }
+
     prompt = f"""
     당신은 코웨이 전사 AI 챗봇의 총괄 지휘자입니다.
     사용자 질문을 분석하여 수행해야 할 모든 작업을 intents 목록에 순서대로 담아 반환하세요.
@@ -241,9 +303,27 @@ def supervisor_node(state: AgentState):
     - TASK_WRITE: 할일·할 일·해야 할 일·테스크·태스크·투두·TODO·to-do 등록·추가 요청
     - TASK_READ: 할일·할 일·해야 할 일·테스크 목록 조회·확인 요청
     - TASK_ACTION: 할일 완료 처리, 삭제, 수정 요청 (예: 보고서 작성 할일 완료로 표시해줘, 할일 제목 바꿔줘)
+    [임직원 디렉토리 관련]
+    - PEOPLE_SEARCH: 코웨이 임직원 검색, 연락처 조회, 담당자 찾기, 이메일 주소 확인 요청
+      → "김철수 연락처 알려줘", "총무팀 담당자 이메일 찾아줘", "홍길동 부서 어디야", "OOO 캘린더에 초대하고 싶어"
+
+    [구글 스프레드시트(Sheets) 관련]
+    - SHEET_READ: 구글 스프레드시트 파일의 데이터 조회·읽기 요청
+      → "스프레드시트 데이터 읽어줘", "시트에서 데이터 가져와줘", "엑셀 파일 내용 확인해줘"
+    - SHEET_WRITE: 구글 스프레드시트에 데이터 입력·추가 요청
+      → "스프레드시트에 데이터 추가해줘", "시트에 행 입력해줘", "엑셀에 항목 추가해줘"
+
+    [구글 문서(Docs) 관련]
+    - DOCS_CREATE: 구글 Docs 새 문서 생성 요청
+      → "구글 Docs 문서 만들어줘", "문서 작성해줘", "보고서 초안 Docs로 만들어줘"
+
     [구글 드라이브 관련]
-    - DRIVE_SEARCH: 구글 드라이브에서 파일 검색 요청 (예: 드라이브에서 2025년 결산 보고서 찾아줘)
-    - DRIVE_LIST: 구글 드라이브 최근 파일 목록·공유 파일 조회 요청 (예: 드라이브 최근 파일 보여줘, 공유받은 파일 알려줘)
+    - DRIVE_SEARCH: 사용자가 본인의 구글 드라이브에서 직접 파일을 검색 요청할 때만 사용
+      → 반드시 "드라이브", "내 드라이브", "공유 드라이브", "내 파일", "내 문서함" 등의 명시적 드라이브 키워드가 포함되어야 함
+      → 예: "내 드라이브에서 결산 보고서 찾아줘", "공유 드라이브에서 기안서 파일 검색해줘"
+    - DRIVE_LIST: 사용자가 본인의 드라이브 목록·공유 파일을 명시적으로 요청할 때만 사용
+      → 반드시 "드라이브", "내 파일", "공유받은 파일" 등의 명시적 드라이브 키워드가 포함되어야 함
+      → 예: "드라이브 최근 파일 보여줘", "공유받은 파일 목록 알려줘"
     [★ 핵심 구분 규칙 - 반드시 준수]
     1. "할일", "할 일", "해야 할 일", "테스크", "태스크", "투두", "to-do", "체크리스트" 키워드 → TASK_WRITE/TASK_READ/TASK_ACTION (절대로 CALENDAR로 분류 금지)
     2. "참석 여부", "참석으로 체크", "참석 확인", "초대 수락", "미응답 일정", "참석 체크" 키워드 → 반드시 CALENDAR_RSVP (CALENDAR_WRITE가 아님)
@@ -253,8 +333,18 @@ def supervisor_node(state: AgentState):
     6. "보내줘", "발송해줘" + 수신자 명확 → EMAIL_SEND / 수신자 불명확하거나 검토 후 보내고 싶다면 → EMAIL_WRITE
     7. "회신", "답장", "답변 메일" → EMAIL_REPLY / "메일 찾아줘", "메일 검색" → EMAIL_SEARCH
     8. "할일 완료", "완료로 표시", "삭제해줘(할일)", "할일 수정" → TASK_ACTION
-    9. "드라이브 검색", "파일 찾아줘(드라이브)" → DRIVE_SEARCH / "드라이브 목록", "최근 파일" → DRIVE_LIST
-    10. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
+    9. "이름 + 연락처/이메일/부서/직책/전화번호 찾아줘" → PEOPLE_SEARCH / "이름 + 캘린더 초대" 요청 시 → [PEOPLE_SEARCH, CALENDAR_WRITE] 또는 CALENDAR_WRITE 단독 (이름 포함)
+    10. [🔒 드라이브 격리 원칙 — 절대 준수]
+       DRIVE_SEARCH / DRIVE_LIST는 질문에 "드라이브", "내 드라이브", "공유 드라이브", "내 파일", "내 문서함" 중
+       하나 이상이 명시적으로 포함된 경우에만 사용하세요.
+       "규정 찾아줘", "문서 알려줘", "파일 어디 있어" 처럼 드라이브를 명시하지 않은 문서 관련 질문은
+       반드시 RAG로 분류하세요. 드라이브와 사내 지식베이스(RAG)는 절대로 혼용하지 마세요.
+    11. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
+    12. [🔒 Sheets 격리 원칙] SHEET_READ/SHEET_WRITE는 반드시 "스프레드시트", "구글 시트", "Google Sheets", "시트 파일" 중 하나가 명시된 경우에만 사용.
+        "예산 조회", "데이터 보여줘" 같이 스프레드시트를 명시하지 않은 요청은 BQ 또는 RAG로 분류할 것.
+        예: "구글 시트에서 예산 데이터 읽어줘" → SHEET_READ / "스프레드시트에 추가해줘" → SHEET_WRITE
+    13. [🔒 Docs 격리 원칙] DOCS_CREATE는 반드시 "구글 Docs", "Google Docs", "Docs 문서", "Docs로 만들어줘" 중 하나가 명시된 경우에만 사용.
+        "회의록 정리해줘", "보고서 써줘" 처럼 Docs를 명시하지 않으면 GENERAL로 분류할 것.
 
     [복수 요청 예시]
     - "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
@@ -263,7 +353,25 @@ def supervisor_node(state: AgentState):
     - "내일 팀회의 시간 2시로 바꿔줘" → ["CALENDAR_UPDATE"]
     - "이번주 빈 시간 알려줘" → ["CALENDAR_FREE"]
     - "보고서 작성 할일 완료 처리해줘" → ["TASK_ACTION"]
-    - "드라이브에서 2025 결산 파일 찾아줘" → ["DRIVE_SEARCH"]
+    - "내 드라이브에서 2025 결산 파일 찾아줘" → ["DRIVE_SEARCH"]  ← "드라이브" 명시 필수
+    - "출장 규정 알려줘" → ["RAG"]  ← 드라이브 미언급이므로 반드시 RAG
+    - "연차 문서 어디 있어?" → ["RAG"]  ← 드라이브 미언급이므로 반드시 RAG
+    - "스프레드시트 데이터 읽어줘" → ["SHEET_READ"]
+    - "시트에 데이터 추가해줘" → ["SHEET_WRITE"]
+    - "구글 Docs 보고서 만들어줘" → ["DOCS_CREATE"]
+    - "내일 오후 3시 화상회의 일정 잡아줘" → ["CALENDAR_WRITE"]  ← 온라인 미팅도 CALENDAR_WRITE
+
+    [confidence 산출 기준]
+    - 0.9 이상: 키워드가 명확하고 인텐트가 분명한 경우
+    - 0.7~0.9: 대체로 명확하나 약간 애매한 경우
+    - 0.5~0.7: 두 가지 인텐트 가능성이 있어 애매한 경우
+    - 0.5 미만: 질문이 너무 모호하거나 의도 파악 불가
+
+    [source_tier 산출 기준]
+    - "official": RAG, BQ 인텐트 → 사내 공식 데이터 소스
+    - "personal": DRIVE_SEARCH, DRIVE_LIST, SHEET_READ, SHEET_WRITE, DOCS_CREATE → 개인 파일
+    - "action": EMAIL_*, CALENDAR_*, TASK_* → 액션 수행
+    - "general": GENERAL → 일반 대화
 
     질문: {user_input}
     """
@@ -284,16 +392,44 @@ def supervisor_node(state: AgentState):
         raise
     decision_data = json.loads(response.text)
     intents = decision_data.get("intents", ["GENERAL"])
+    confidence = float(decision_data.get("confidence", 1.0))
+    source_tier = decision_data.get("source_tier", "general")
     if not intents:
         intents = ["GENERAL"]
 
-    print(f"✅ [Supervisor] 판단 결과: {intents}")
+    # 확신도 낮고 공식 데이터 소스일 때 먼저 사용자에게 의도 확인
+    if confidence < 0.6 and source_tier == "official" and len(intents) == 1:
+        clarify_msg = (
+            "💡 요청을 좀 더 명확히 해주시면 더 정확하게 안내드릴 수 있어요!\n\n"
+            "- **수치/실적 데이터** 조회라면 → 'BQ 데이터 조회해줘'\n"
+            "- **규정/가이드 문서** 검색이라면 → '사내 지식베이스에서 찾아줘'\n"
+            "- **내 드라이브 파일** 검색이라면 → '드라이브에서 찾아줘'"
+        )
+        return {
+            "messages": [AIMessage(content=clarify_msg)],
+            "current_intent": "GENERAL",
+            "top_intent": "GENERAL",
+            "pending_intents": [],
+            "bq_retry_count": 0,
+            "bq_error_log": "",
+            "last_failed_intent": "",
+            "last_error_type": "",
+            "fallback_suggested": False,
+            "awaiting_fallback_query": "",
+            "sources": []
+        }
+
+    print(f"✅ [Supervisor] 판단 결과: {intents} (confidence={confidence:.2f}, tier={source_tier})")
     return {
         "current_intent": intents[0],
-        "top_intent": intents[0],   # Dispatcher 덮어쓰기와 무관하게 최초 인텐트 보존
+        "top_intent": intents[0],
         "pending_intents": intents[1:],
         "bq_retry_count": 0,
         "bq_error_log": "",
+        "last_failed_intent": "",
+        "last_error_type": "",
+        "fallback_suggested": False,
+        "awaiting_fallback_query": "",
         "sources": []
     }
 
@@ -805,19 +941,56 @@ def bq_node(state: AgentState):
         err_str = str(e)
         print(f"❌ [⚠️ CRITICAL-BQ-ERROR] 빅쿼리 노드 런타임 크래시: {err_str}")
 
-        # Access Denied: 권한 없는 사용자 → LLM 재시도 없이 바로 안내
+        # Access Denied: RAG 폴백 시도 → 없으면 Drive 제안
         if "Access Denied" in err_str or "403" in err_str or "accessDenied" in err_str:
-            access_denied_report = (
-                "🔒 **데이터 접근 권한이 없습니다.**\n\n"
-                f"요청하신 데이터(`{user_input[:40]}...`)는 접근이 제한된 데이터셋입니다.\n\n"
-                "해당 데이터 분석이 필요하신 경우, **데이터 관리자에게 권한 신청**을 해주세요.\n"
-                "권한 신청 후 재질문해주시면 바로 분석해드리겠습니다."
-            )
-            return {
-                "messages": [AIMessage(content=access_denied_report)],
-                "bq_error_log": "",   # 권한 오류는 SQL 교정 불필요 → 재시도 차단
-                "refined_query": ""
-            }
+            print("🔒 [BQ] Access Denied → 사내 지식베이스 폴백 시도 중...")
+            original_query = get_last_human_input(state)
+            rag_context = ""
+            try:
+                from rag_node import hybrid_search_bq
+                rag_email = state["user_info"].get("email", "employee_all@coway.com")
+                rag_context, _ = hybrid_search_bq(original_query, rag_email)
+            except Exception as rag_err:
+                print(f"⚠️ [BQ→RAG 폴백] 오류: {rag_err}")
+
+            if rag_context:
+                rag_answer_prompt = f"""사용자 질문: {original_query}
+아래 사내 지식베이스 문서를 바탕으로 정확하고 친절하게 답변하세요.
+
+[사내 지식베이스 문서]
+{rag_context}
+"""
+                try:
+                    rag_answer = ai_client.models.generate_content(model=MODEL_NAME, contents=rag_answer_prompt).text
+                except Exception:
+                    rag_answer = rag_context
+                return {
+                    "messages": [AIMessage(content=rag_answer + "\n\n---\n> 📚 **사내 지식베이스 기반 안내 | BQ 권한이 없어 사내 지식베이스 기반으로 안내해드렸습니다**")],
+                    "bq_error_log": "",
+                    "bq_retry_count": 0,
+                    "last_failed_intent": "BQ",
+                    "last_error_type": "",
+                    "fallback_suggested": False,
+                    "awaiting_fallback_query": "",
+                    "refined_query": ""
+                }
+            else:
+                # RAG도 없음 → Drive 폴백 제안
+                fallback_msg = (
+                    "🔒 **BQ 데이터 접근 권한이 없습니다.**\n\n"
+                    f"사내 지식베이스에서도 **'{original_query}'** 관련 문서를 찾지 못했습니다.\n\n"
+                    "📂 개인 드라이브에서 관련 파일을 찾아드릴까요?"
+                )
+                return {
+                    "messages": [AIMessage(content=fallback_msg)],
+                    "bq_error_log": "",
+                    "bq_retry_count": 0,
+                    "last_failed_intent": "BQ",
+                    "last_error_type": "PERMISSION",
+                    "fallback_suggested": True,
+                    "awaiting_fallback_query": original_query,
+                    "refined_query": ""
+                }
 
         fallback_error_report = (
             f"⚠️ **BigQuery 데이터 분석 중 오류가 발생했습니다.**\n\n"
@@ -1259,6 +1432,10 @@ def calendar_write_node(state: AgentState):
     - "내일", "모레" 등 상대적 날짜 표현을 현재 날짜 기준으로 정확히 계산하세요.
     - 종료시간이 없다면 시작시간으로부터 1시간 뒤로 설정하세요.
 
+    [isOnline 규칙]
+    - "온라인", "화상회의", "화상 미팅", "미트", "Meet", "비대면", "Zoom", "화상", "원격" 키워드 포함 시 isOnline=true
+    - 그 외 모든 경우 isOnline=false
+
     사용자 요청: {user_input}
     """
     try:
@@ -1319,8 +1496,43 @@ def calendar_write_node(state: AgentState):
             else:
                 date_label = f"{data.month}월 {data.day}일 {h1}:{m1} ~ {data.endMonth}월 {data.endDay}일 {h2}:{m2}"
 
-        calendar.events().insert(calendarId=user_email, body=event).execute()
-        return {"messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **기간:** {date_label}\n\n구글 캘린더에 완벽하게 연동되었습니다.")]}
+        # 참석자 처리: 동명이인 감지 → 선택 요청, 단독 매칭 → 자동 해석 후 초대
+        if data.attendees:
+            raw_list = [a.strip() for a in data.attendees.split(',') if a.strip()]
+            attendee_emails, ambig_msg = _resolve_attendees_or_disambiguate(raw_list, user_email)
+            if ambig_msg:
+                return {"messages": [AIMessage(content=ambig_msg)]}
+            attendee_emails = [em for em in attendee_emails if em and em != user_email]
+        else:
+            attendee_emails = []
+
+        if attendee_emails:
+            event['attendees'] = [{'email': em} for em in attendee_emails]
+
+        # 온라인 미팅 요청 시 Google Meet 링크 자동 생성
+        if getattr(data, 'isOnline', False):
+            event['conferenceData'] = {
+                'createRequest': {
+                    'requestId': f"meet-{user_email}-{data.year}{data.month:02d}{data.day:02d}",
+                    'conferenceSolutionKey': {'type': 'hangoutsMeet'}
+                }
+            }
+
+        send_updates = 'all' if attendee_emails else 'none'
+        insert_kwargs = {'calendarId': user_email, 'body': event, 'sendUpdates': send_updates}
+        if getattr(data, 'isOnline', False):
+            insert_kwargs['conferenceDataVersion'] = 1
+        created_event = calendar.events().insert(**insert_kwargs).execute()
+
+        attendee_line = ""
+        if attendee_emails:
+            attendee_line = f"\n- **초대된 참석자:** {', '.join(attendee_emails)} (초대 메일 자동 발송)"
+        meet_line = ""
+        if getattr(data, 'isOnline', False):
+            meet_url = created_event.get('conferenceData', {}).get('entryPoints', [{}])[0].get('uri', '')
+            if meet_url:
+                meet_line = f"\n- **Google Meet 링크:** {meet_url}"
+        return {"messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **기간:** {date_label}{attendee_line}{meet_line}\n\n구글 캘린더에 완벽하게 연동되었습니다.")]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
@@ -1675,11 +1887,14 @@ def calendar_update_node(state: AgentState):
             patch_body['end'] = {'dateTime': new_end.isoformat(), 'timeZone': tz_str}
 
         if data.attendees_add:
+            raw_inputs = [e.strip() for e in data.attendees_add.split(',') if e.strip()]
+            resolved_emails, ambig_msg = _resolve_attendees_or_disambiguate(raw_inputs, user_email)
+            if ambig_msg:
+                return {"messages": [AIMessage(content=ambig_msg)]}
             existing_attendees = event.get('attendees', [])
-            new_emails = [e.strip() for e in data.attendees_add.split(',') if e.strip()]
             existing_emails = {a['email'] for a in existing_attendees}
-            for em in new_emails:
-                if em not in existing_emails:
+            for em in resolved_emails:
+                if em and em not in existing_emails:
                     existing_attendees.append({'email': em})
             patch_body['attendees'] = existing_attendees
 
@@ -1760,13 +1975,490 @@ def calendar_free_node(state: AgentState):
         return {"messages": [AIMessage(content=f"⚠️ 여유 시간 조회 중 오류: {str(e)}")]}
 
 
-def drive_search_node(state: AgentState):
-    print("📁 [DRIVE_SEARCH] Google Drive 파일 검색 중...")
+_CALENDAR_AMBIG_MARKER = "동명이인 선택 필요"
+
+
+def lookup_employee_candidates(name: str, user_email: str) -> list:
+    """
+    이름으로 임직원 후보 최대 5명 조회.
+    이미 이메일 형식이면 단일 항목 리스트 반환.
+    반환 형식: [{'name': str, 'email': str, 'dept': str, 'title': str}]
+    """
+    if '@' in name:
+        return [{'name': name, 'email': name, 'dept': '', 'title': ''}]
+    try:
+        people_service = get_workspace_service('people', 'v1', user_email)
+        results = people_service.people().searchDirectoryPeople(
+            query=name,
+            readMask='names,emailAddresses,organizations',
+            sources=['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+            pageSize=5
+        ).execute()
+        candidates = []
+        for p in results.get('people', []):
+            p_name = p.get('names', [{}])[0].get('displayName', '') if p.get('names') else ''
+            emails = p.get('emailAddresses', [])
+            email_val = emails[0].get('value', '') if emails else ''
+            org = p.get('organizations', [{}])[0] if p.get('organizations') else {}
+            if email_val:
+                candidates.append({
+                    'name': p_name,
+                    'email': email_val,
+                    'dept': org.get('department', ''),
+                    'title': org.get('title', '')
+                })
+        return candidates
+    except Exception as e:
+        print(f"⚠️ [People] 후보 조회 실패 ({name}): {e}")
+        return []
+
+
+def resolve_employee_email(name_or_email: str, user_email: str) -> str:
+    """단건 이름→이메일 변환. 동명이인 시 첫 번째 반환 (단순 참고용 — 캘린더 초대에는 사용 금지)."""
+    candidates = lookup_employee_candidates(name_or_email, user_email)
+    if candidates:
+        print(f"👤 [People] '{name_or_email}' → {candidates[0]['email']}")
+        return candidates[0]['email']
+    return name_or_email
+
+
+def _resolve_attendees_or_disambiguate(raw_list: list, user_email: str) -> tuple:
+    """
+    참석자 이름 목록을 이메일로 변환.
+    동명이인 발견 시 즉시 빈 리스트 + 사용자에게 보여줄 안내 메시지 반환.
+    정상 처리 시 (resolved_emails, "") 반환.
+    반환: (resolved_emails: list[str], ambig_message: str)
+    """
+    resolved = []
+    ambig_blocks = []
+
+    for raw in raw_list:
+        if '@' in raw:
+            resolved.append(raw)
+            continue
+
+        candidates = lookup_employee_candidates(raw, user_email)
+
+        if len(candidates) == 0:
+            print(f"⚠️ [People] '{raw}' 검색 결과 없음 — 원본 그대로 사용")
+            resolved.append(raw)
+
+        elif len(candidates) == 1:
+            print(f"👤 [People] '{raw}' → {candidates[0]['email']} (단독 매칭)")
+            resolved.append(candidates[0]['email'])
+
+        else:
+            # 동명이인: 완전 일치하는 이름만 걸러서 1명이면 통과, 아니면 선택 요청
+            exact = [c for c in candidates if c['name'] == raw]
+            if len(exact) == 1:
+                print(f"👤 [People] '{raw}' 동명이인 중 정확 일치 1명 → {exact[0]['email']}")
+                resolved.append(exact[0]['email'])
+            else:
+                # 선택 안내 블록 구성
+                target = exact if exact else candidates
+                lines = [f"**'{raw}'** 님이 여러 명 검색됩니다:"]
+                for i, c in enumerate(target, 1):
+                    info = f"{c['dept']} {c['title']}".strip() or "소속 정보 없음"
+                    lines.append(f"  {i}. {c['name']} ({info}) — `{c['email']}`")
+                ambig_blocks.append("\n".join(lines))
+
+    if ambig_blocks:
+        msg = (
+            f"❓ **[{_CALENDAR_AMBIG_MARKER}]**\n\n"
+            + "\n\n".join(ambig_blocks)
+            + "\n\n"
+            "이메일 주소를 직접 사용하거나 부서명을 붙여 다시 요청해 주세요.\n"
+            "예: `\"개발팀 김철수`랑 이영희랑 내일 3시 팀미팅 잡아줘\"`\n"
+            "또는: `\"kim.cs@coway.com이랑 이영희랑 내일 3시 팀미팅 잡아줘\"`"
+        )
+        return [], msg
+
+    return resolved, ""
+
+
+def people_search_node(state: AgentState):
+    print("👥 [PEOPLE_SEARCH] 코웨이 임직원 디렉토리 검색 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
     search_prompt = f"""
 사용자 요청: {user_input}
+검색할 임직원 이름, 부서명, 직책 키워드(query)와 최대 결과 수(max_results, 기본 5)를 추출하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=PeopleSearchSchema,
+            ),
+        )
+        data = PeopleSearchSchema(**json.loads(response.text))
+        people_service = get_workspace_service('people', 'v1', user_email)
+
+        results = people_service.people().searchDirectoryPeople(
+            query=data.query,
+            readMask='names,emailAddresses,organizations,phoneNumbers',
+            sources=['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+            pageSize=min(data.max_results, 10)
+        ).execute()
+
+        people_list = results.get('people', [])
+
+        if not people_list:
+            return {"messages": [AIMessage(content=(
+                f"👥 **'{data.query}'** 검색 결과가 없습니다.\n\n"
+                "다른 이름이나 부서명으로 다시 검색해 주세요."
+            ))]}
+
+        lines = []
+        first_name, first_email = "", ""
+        for i, p in enumerate(people_list):
+            name = p.get('names', [{}])[0].get('displayName', '이름없음') if p.get('names') else '이름없음'
+            email_val = p.get('emailAddresses', [{}])[0].get('value', '') if p.get('emailAddresses') else ''
+            org = p.get('organizations', [{}])[0] if p.get('organizations') else {}
+            dept = org.get('department', '')
+            title = org.get('title', '')
+            phone_list = p.get('phoneNumbers', [])
+            phone = phone_list[0].get('value', '') if phone_list else ''
+
+            if i == 0:
+                first_name, first_email = name, email_val
+
+            parts = []
+            if dept: parts.append(f"부서: {dept}")
+            if title: parts.append(f"직책: {title}")
+            if phone: parts.append(f"연락처: {phone}")
+            if email_val: parts.append(f"이메일: `{email_val}`")
+            info_str = " | ".join(parts) if parts else "상세 정보 없음"
+            lines.append(f"**{name}** — {info_str}")
+
+        result_text = "\n".join(f"{i+1}. {line}" for i, line in enumerate(lines))
+
+        invite_hint = ""
+        if first_email:
+            invite_hint = (
+                f"\n\n💡 **캘린더 초대**: \"{first_name}님과 [일정 제목] 미팅 일정 잡아줘\"라고 말씀하시면 "
+                f"자동으로 초대 메일이 발송됩니다."
+            )
+
+        return {"messages": [AIMessage(content=(
+            f"👥 **임직원 검색 결과** ({len(people_list)}건)\n\n{result_text}{invite_hint}"
+        ))]}
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ PEOPLE_SEARCH 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 임직원 검색 중 오류: {str(e)}")]}
+
+
+def sheet_read_node(state: AgentState):
+    print("📊 [SHEET_READ] 구글 스프레드시트 데이터 조회 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    # 키워드 게이트: 명시적 스프레드시트 언급 없으면 차단
+    user_input_lower = user_input.lower()
+    if not any(kw in user_input_lower for kw in _SHEET_TRIGGER_KEYWORDS):
+        return {"messages": [AIMessage(content=(
+            "📊 스프레드시트 조회는 '구글 시트', '스프레드시트' 등을 명시해 주세요.\n"
+            "사내 공식 데이터 조회라면 'BQ 데이터 조회해줘'로 요청해 주세요."
+        ))]}
+
+    extract_prompt = f"""
+사용자 요청: {user_input}
+읽을 스프레드시트 파일 이름(file_name)과 셀 범위(range, 예: "Sheet1!A1:E20")를 추출하세요.
+범위 미지정이면 range를 "Sheet1!A1:Z100"으로 설정하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=extract_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SheetReadSchema,
+            ),
+        )
+        data = SheetReadSchema(**json.loads(response.text))
+
+        drive_service = get_workspace_service('drive', 'v3', user_email)
+        query = f"name contains '{data.file_name}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+        files = drive_service.files().list(q=query, pageSize=5, fields="files(id,name,webViewLink)").execute().get('files', [])
+
+        if not files:
+            return {"messages": [AIMessage(content=f"📊 **'{data.file_name}'** 스프레드시트를 드라이브에서 찾을 수 없습니다.\n\n파일명을 정확히 입력해 주세요.")]}
+
+        if len(files) > 1:
+            file_list = "\n".join(f"- [{f['name']}]({f.get('webViewLink','')})" for f in files[:5])
+            return {"messages": [AIMessage(content=f"📊 **'{data.file_name}'** 파일이 여러 개 검색됩니다. 파일명을 더 정확히 알려주세요:\n\n{file_list}")]}
+
+        file_id = files[0]['id']
+        file_name = files[0]['name']
+        file_url = files[0].get('webViewLink', '')
+        sheets_service = get_workspace_service('sheets', 'v4', user_email)
+        result = sheets_service.spreadsheets().values().get(spreadsheetId=file_id, range=data.range).execute()
+        values = result.get('values', [])
+
+        if not values:
+            return {"messages": [AIMessage(content=f"📊 **{file_name}** — 지정 범위({data.range})에 데이터가 없습니다.\n\n[파일 열기]({file_url})")]}
+
+        header = values[0] if values else []
+        rows = values[1:] if len(values) > 1 else []
+        md_table = "| " + " | ".join(str(c) for c in header) + " |\n"
+        md_table += "| " + " | ".join(["---"] * len(header)) + " |\n"
+        for row in rows[:20]:
+            padded = list(row) + [""] * (len(header) - len(row))
+            md_table += "| " + " | ".join(str(c) for c in padded) + " |\n"
+
+        extra = f"\n\n> 전체 {len(rows)}행 중 최대 20행 표시" if len(rows) > 20 else ""
+        file_link = f"\n\n[📎 스프레드시트 열기]({file_url})" if file_url else ""
+        return {"messages": [AIMessage(content=f"📊 **{file_name}** ({data.range})\n\n{md_table}{extra}{file_link}{_SHEET_DISCLAIMER}")]}
+
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ SHEET_READ 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 스프레드시트 읽기 중 오류: {str(e)}")]}
+
+
+def sheet_write_node(state: AgentState):
+    print("📊 [SHEET_WRITE] 구글 스프레드시트 데이터 추가 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    # 키워드 게이트
+    user_input_lower = user_input.lower()
+    if not any(kw in user_input_lower for kw in _SHEET_TRIGGER_KEYWORDS):
+        return {"messages": [AIMessage(content=(
+            "✏️ 스프레드시트 데이터 추가는 '구글 시트', '스프레드시트' 등을 명시해 주세요."
+        ))]}
+
+    # 2단계 확인: 이미 확인 대기 중인 쓰기 작업인지 체크
+    sheet_confirm = _get_sheet_write_confirmed(state)
+    if sheet_confirm:
+        try:
+            file_id = sheet_confirm.get('file_id')
+            file_name = sheet_confirm.get('file_name', '')
+            file_url = sheet_confirm.get('file_url', '')
+            sheet_name = sheet_confirm.get('sheet_name', 'Sheet1')
+            row_data = sheet_confirm.get('row_data', [])
+            sheets_service = get_workspace_service('sheets', 'v4', user_email)
+            range_str = f"{sheet_name}!A:Z"
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=file_id, range=range_str,
+                valueInputOption='USER_ENTERED', insertDataOption='INSERT_ROWS',
+                body={'values': [row_data]}
+            ).execute()
+            row_preview = " | ".join(str(c) for c in row_data)
+            file_link = f"\n\n[📎 스프레드시트 열기]({file_url})" if file_url else ""
+            return {"messages": [AIMessage(content=f"✅ **{file_name}** — 새 행이 추가되었습니다!\n\n추가된 데이터: `{row_preview}`{file_link}{_SHEET_DISCLAIMER}")]}
+        except Exception as e:
+            if "AUTH_REQUIRED_FOR:" in str(e):
+                raise
+            return {"messages": [AIMessage(content=f"⚠️ 스프레드시트 쓰기 중 오류: {str(e)}")]}
+
+    extract_prompt = f"""
+사용자 요청: {user_input}
+추가할 스프레드시트 파일 이름(file_name), 시트 탭 이름(sheet_name, 기본 "Sheet1"), 추가할 행 데이터 배열(row_data)을 추출하세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=extract_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SheetWriteSchema,
+            ),
+        )
+        data = SheetWriteSchema(**json.loads(response.text))
+
+        drive_service = get_workspace_service('drive', 'v3', user_email)
+        query = f"name contains '{data.file_name}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+        files = drive_service.files().list(q=query, pageSize=5, fields="files(id,name,webViewLink)").execute().get('files', [])
+
+        if not files:
+            return {"messages": [AIMessage(content=f"📊 **'{data.file_name}'** 스프레드시트를 드라이브에서 찾을 수 없습니다.")]}
+
+        if len(files) > 1:
+            file_list = "\n".join(f"- [{f['name']}]({f.get('webViewLink','')})" for f in files[:5])
+            return {"messages": [AIMessage(content=f"📊 파일이 여러 개 검색됩니다. 더 정확한 파일명을 알려주세요:\n\n{file_list}")]}
+
+        file_id = files[0]['id']
+        file_name = files[0]['name']
+        file_url = files[0].get('webViewLink', '')
+        row_preview = " | ".join(str(c) for c in data.row_data)
+        pending = json.dumps({"file_id": file_id, "file_name": file_name, "file_url": file_url,
+                               "sheet_name": data.sheet_name, "row_data": data.row_data}, ensure_ascii=False)
+        confirm_msg = (
+            f"📊 **{_SHEET_WRITE_CONFIRM_MARKER}?**\n\n"
+            f"- **파일:** {file_name}\n"
+            f"- **시트:** {data.sheet_name or 'Sheet1'}\n"
+            f"- **추가될 데이터:** `{row_preview}`\n\n"
+            f"추가하려면 **'네'** 라고 답해주세요.\n\n"
+            f"__PENDING_SHEET_WRITE__{pending}__END__"
+        )
+        return {"messages": [AIMessage(content=confirm_msg)]}
+
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ SHEET_WRITE 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ 스프레드시트 쓰기 중 오류: {str(e)}")]}
+
+
+def docs_create_node(state: AgentState):
+    print("📄 [DOCS_CREATE] 구글 Docs 문서 생성 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    # 키워드 게이트: 명시적 Docs 요청 없으면 의도 확인
+    user_input_lower = user_input.lower()
+    if not any(kw in user_input_lower for kw in _DOCS_TRIGGER_KEYWORDS):
+        return {"messages": [AIMessage(content=(
+            "📄 구글 Docs 문서 생성은 '구글 Docs', 'Docs 문서 만들어줘' 등으로 명시해 주세요.\n"
+            "단순 요약이나 답변이 필요하시면 그냥 질문해 주세요!"
+        ))]}
+
+    extract_prompt = f"""
+사용자 요청: {user_input}
+생성할 구글 Docs 문서의 제목(title)과 본문 내용(content)을 추출하세요.
+content는 마크다운 없이 순수 텍스트로 작성하세요. 내용 미지정 시 빈 문자열로 두세요.
+"""
+    try:
+        response = ai_client.models.generate_content(
+            model=MODEL_NAME,
+            contents=extract_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=DocsCreateSchema,
+            ),
+        )
+        data = DocsCreateSchema(**json.loads(response.text))
+        docs_service = get_workspace_service('docs', 'v1', user_email)
+
+        # 문서 생성
+        doc = docs_service.documents().create(body={'title': data.title}).execute()
+        doc_id = doc.get('documentId')
+
+        # 본문 내용이 있으면 삽입
+        if data.content:
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': [{'insertText': {'location': {'index': 1}, 'text': data.content}}]}
+            ).execute()
+
+        doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+        return {"messages": [AIMessage(content=(
+            f"📄 **Google Docs 문서가 생성되었습니다!**\n\n"
+            f"- **제목:** {data.title}\n"
+            f"- **링크:** [문서 열기]({doc_url})\n\n"
+            f"위 링크를 클릭하면 바로 편집할 수 있습니다."
+            f"{_DOCS_DISCLAIMER}"
+        ))]}
+
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ DOCS_CREATE 에러: {str(e)}")
+        return {"messages": [AIMessage(content=f"⚠️ Google Docs 생성 중 오류: {str(e)}")]}
+
+
+DRIVE_TRIGGER_KEYWORDS = [
+    "드라이브", "내 드라이브", "공유 드라이브", "내 파일", "내 문서함",
+    "공유받은 파일", "공유받은 문서", "내 구글 드라이브", "drive"
+]
+
+_DRIVE_DISCLAIMER = "\n\n---\n> 📂 **개인/공유 드라이브 출처 — 사내 지식베이스 아님**"
+
+# 드라이브 확인 흐름 상수
+_SHEET_DISCLAIMER = "\n\n---\n> 📊 **개인 드라이브 스프레드시트 출처 — 사내 지식베이스 아님**"
+_DOCS_DISCLAIMER = "\n\n---\n> 📄 **개인 드라이브 Docs 출처 — 사내 지식베이스 아님**"
+_SHEET_TRIGGER_KEYWORDS = ["스프레드시트", "구글 시트", "google sheets", "시트 파일", "엑셀 파일"]
+_DOCS_TRIGGER_KEYWORDS = ["구글 docs", "google docs", "docs 문서", "docs로", "구글독스"]
+_SHEET_WRITE_CONFIRM_MARKER = "스프레드시트에 다음 데이터를 추가할까요"
+_DRIVE_CONFIRM_MARKER = "개인 구글 드라이브에서 검색을 진행할까요"
+_DRIVE_CONFIRM_KEYWORDS = [
+    "네", "응", "맞아", "맞습니다", "맞아요", "진행", "해줘", "해주세요",
+    "확인", "예", "yes", "ok", "ㅇㅇ", "그래", "그렇습니다"
+]
+_DRIVE_LIST_KEYWORDS = ["목록", "최근 파일", "공유받은 파일", "파일 목록", "list", "최근"]
+
+
+def _get_sheet_write_confirmed(state: AgentState) -> dict:
+    """시트 쓰기 확인 응답 감지. 확인됐으면 {'file_id','file_name','sheet_name','row_data'} 반환, 아니면 {}"""
+    user_input = get_last_human_input(state).strip().lower()
+    if not any(kw in user_input for kw in _DRIVE_CONFIRM_KEYWORDS):
+        return {}
+    for msg in reversed(state["messages"]):
+        if hasattr(msg, 'type') and msg.type == 'ai' and _SHEET_WRITE_CONFIRM_MARKER in msg.content:
+            import re
+            m = re.search(r'__PENDING_SHEET_WRITE__({.*?})__END__', msg.content, re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group(1))
+                except Exception:
+                    pass
+    return {}
+
+
+def _get_drive_confirmed_query(state: AgentState) -> str:
+    """
+    이전 AI 메시지에 드라이브 확인 질문이 있고 현재 사용자 응답이 짧은 긍정이면
+    원본 드라이브 요청 텍스트 반환. 그 외엔 빈 문자열.
+    """
+    user_input = get_last_human_input(state)
+    is_affirm = (
+        any(kw in user_input for kw in _DRIVE_CONFIRM_KEYWORDS)
+        and len(user_input.strip()) < 30
+    )
+    if not is_affirm:
+        return ""
+
+    msgs = list(state["messages"])
+    # 현재 HumanMessage 제외하고 역방향으로 가장 최근 AI 메시지만 확인
+    for i in range(len(msgs) - 2, -1, -1):
+        msg = msgs[i]
+        if hasattr(msg, 'type') and msg.type == "ai":
+            if _DRIVE_CONFIRM_MARKER in msg.content:
+                # 확인 질문 이전의 Human 메시지(원본 드라이브 요청) 탐색
+                for j in range(i - 1, -1, -1):
+                    if hasattr(msgs[j], 'type') and msgs[j].type == "human":
+                        return msgs[j].content
+            break  # 가장 최근 AI 메시지만 확인
+    return ""
+
+
+def drive_search_node(state: AgentState):
+    print("📁 [DRIVE_SEARCH] Google Drive 파일 검색 중...")
+    user_input = get_last_human_input(state)
+    user_email = state["user_info"].get("email", "unknown")
+
+    # 드라이브 명시 키워드 없으면 RAG 안내로 즉시 반환 (오분류 방어)
+    if not any(kw in user_input for kw in DRIVE_TRIGGER_KEYWORDS):
+        print("⚠️ [DRIVE_SEARCH] 드라이브 키워드 미감지 → RAG 안내 반환")
+        return {"messages": [AIMessage(content=(
+            "🔍 사내 규정이나 공식 문서를 찾으시는 건가요?\n\n"
+            "코봇의 **사내 지식베이스(RAG)**는 공식 등록된 규정 문서 기반으로 답변드립니다.\n"
+            "예: \"출장 규정 알려줘\", \"연차 사용 방법은?\"\n\n"
+            "**개인 또는 공유 드라이브**에서 직접 파일을 검색하시려면 '드라이브'를 명시해 주세요.\n"
+            "예: \"**내 드라이브**에서 결산 보고서 찾아줘\", \"**공유 드라이브**에서 기안서 검색해줘\""
+        ))]}
+
+    # 드라이브 키워드 있음 → 사용자 확인 먼저 요청 (이전 확인 응답이 없는 경우)
+    confirmed_query = _get_drive_confirmed_query(state)
+    actual_query = confirmed_query if confirmed_query else user_input
+    if not confirmed_query:
+        print("❓ [DRIVE_SEARCH] 드라이브 키워드 감지 → 확인 질문 반환")
+        return {"messages": [AIMessage(content=(
+            f"📂 챗봇DB(공식 지식베이스)가 아닌 **{_DRIVE_CONFIRM_MARKER}**?\n\n"
+            f"> 💡 공식 사내 규정이 필요하시면 \"출장 규정 알려줘\" 형태로 질문해 주세요.\n\n"
+            f"드라이브 검색을 진행하시려면 **\"네\"** 또는 **\"진행해줘\"**라고 답해주세요."
+        ))]}
+
+    print(f"✅ [DRIVE_SEARCH] 사용자 확인 완료 → 검색 진행 (원본 요청: {actual_query[:40]}...)")
+    search_prompt = f"""
+사용자 요청: {actual_query}
 구글 드라이브에서 검색할 파일명 키워드(query), 최대 결과 수(max_results, 기본 10),
 파일 유형(file_type: doc/sheet/slide/pdf/folder/all 중 하나)을 추출하세요.
 """
@@ -1806,11 +2498,15 @@ def drive_search_node(state: AgentState):
         files = results.get('files', [])
 
         if not files:
-            return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과가 없습니다.**\n\n검색어: '{data.query}'")]}
+            return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과가 없습니다.**\n\n검색어: '{data.query}'{_DRIVE_DISCLAIMER}")]}
 
-        type_label = {'application/vnd.google-apps.document': '📄 문서', 'application/vnd.google-apps.spreadsheet': '📊 스프레드시트',
-                      'application/vnd.google-apps.presentation': '📑 프레젠테이션', 'application/pdf': '📋 PDF',
-                      'application/vnd.google-apps.folder': '📁 폴더'}
+        type_label = {
+            'application/vnd.google-apps.document': '📄 문서',
+            'application/vnd.google-apps.spreadsheet': '📊 스프레드시트',
+            'application/vnd.google-apps.presentation': '📑 프레젠테이션',
+            'application/pdf': '📋 PDF',
+            'application/vnd.google-apps.folder': '📁 폴더',
+        }
         file_lines = []
         for f in files:
             icon = type_label.get(f.get('mimeType', ''), '📄')
@@ -1818,7 +2514,7 @@ def drive_search_node(state: AgentState):
             link = f.get('webViewLink', '')
             file_lines.append(f"{icon} [{f['name']}]({link}) — 수정일: {modified}")
 
-        return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과** ({len(files)}건)\n\n" + "\n".join(file_lines))]}
+        return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과** ({len(files)}건)\n\n" + "\n".join(file_lines) + _DRIVE_DISCLAIMER)]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
@@ -1831,6 +2527,25 @@ def drive_list_node(state: AgentState):
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
+    # 드라이브 명시 키워드 없으면 안내 반환 (오분류 방어)
+    if not any(kw in user_input for kw in DRIVE_TRIGGER_KEYWORDS):
+        print("⚠️ [DRIVE_LIST] 드라이브 키워드 미감지 → 안내 반환")
+        return {"messages": [AIMessage(content=(
+            "📂 드라이브 파일 목록을 조회하시려면 '드라이브'를 명시해 주세요.\n\n"
+            "예: \"**내 드라이브** 최근 파일 보여줘\", \"**공유받은 파일** 목록 알려줘\""
+        ))]}
+
+    # 드라이브 키워드 있음 → 사용자 확인 먼저 요청 (이전 확인 응답이 없는 경우)
+    confirmed_query = _get_drive_confirmed_query(state)
+    if not confirmed_query:
+        print("❓ [DRIVE_LIST] 드라이브 키워드 감지 → 확인 질문 반환")
+        return {"messages": [AIMessage(content=(
+            f"📂 챗봇DB(공식 지식베이스)가 아닌 **{_DRIVE_CONFIRM_MARKER}**?\n\n"
+            f"> 💡 공식 사내 규정이 필요하시면 \"출장 규정 알려줘\" 형태로 질문해 주세요.\n\n"
+            f"드라이브 파일 목록을 조회하시려면 **\"네\"** 또는 **\"진행해줘\"**라고 답해주세요."
+        ))]}
+
+    print("✅ [DRIVE_LIST] 사용자 확인 완료 → 목록 조회 진행")
     try:
         drive = get_workspace_service('drive', 'v3', user_email)
 
@@ -1850,9 +2565,13 @@ def drive_list_node(state: AgentState):
         ).execute()
         recent_files = recent_results.get('files', [])
 
-        type_label = {'application/vnd.google-apps.document': '📄', 'application/vnd.google-apps.spreadsheet': '📊',
-                      'application/vnd.google-apps.presentation': '📑', 'application/pdf': '📋',
-                      'application/vnd.google-apps.folder': '📁'}
+        type_label = {
+            'application/vnd.google-apps.document': '📄',
+            'application/vnd.google-apps.spreadsheet': '📊',
+            'application/vnd.google-apps.presentation': '📑',
+            'application/pdf': '📋',
+            'application/vnd.google-apps.folder': '📁',
+        }
 
         shared_lines = []
         for f in shared_files[:5]:
@@ -1871,7 +2590,12 @@ def drive_list_node(state: AgentState):
         shared_section = "\n".join(shared_lines) if shared_lines else "공유받은 파일이 없습니다."
         recent_section = "\n".join(recent_lines) if recent_lines else "최근 파일이 없습니다."
 
-        return {"messages": [AIMessage(content=f"📂 **Google Drive 현황**\n\n**공유받은 파일 (최근 5건)**\n{shared_section}\n\n**내 파일 (최근 수정순 5건)**\n{recent_section}")]}
+        return {"messages": [AIMessage(content=(
+            f"📂 **Google Drive 현황**\n\n"
+            f"**공유받은 파일 (최근 5건)**\n{shared_section}\n\n"
+            f"**내 파일 (최근 수정순 5건)**\n{recent_section}"
+            f"{_DRIVE_DISCLAIMER}"
+        ))]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
@@ -1946,6 +2670,10 @@ workflow.add_node("TASK_READ_Node", task_read_node)
 workflow.add_node("TASK_ACTION_Node", task_action_node)
 workflow.add_node("DRIVE_SEARCH_Node", drive_search_node)
 workflow.add_node("DRIVE_LIST_Node", drive_list_node)
+workflow.add_node("PEOPLE_SEARCH_Node", people_search_node)
+workflow.add_node("SHEET_READ_Node", sheet_read_node)
+workflow.add_node("SHEET_WRITE_Node", sheet_write_node)
+workflow.add_node("DOCS_CREATE_Node", docs_create_node)
 
 
 # START → Supervisor → 첫 번째 액션 노드 (current_intent 기준 직접 라우팅)
@@ -1972,6 +2700,10 @@ INTENT_NODE_MAP = {
     "TASK_ACTION": "TASK_ACTION_Node",
     "DRIVE_SEARCH": "DRIVE_SEARCH_Node",
     "DRIVE_LIST": "DRIVE_LIST_Node",
+    "PEOPLE_SEARCH": "PEOPLE_SEARCH_Node",
+    "SHEET_READ": "SHEET_READ_Node",
+    "SHEET_WRITE": "SHEET_WRITE_Node",
+    "DOCS_CREATE": "DOCS_CREATE_Node",
 }
 
 def route_after_supervisor(state: AgentState) -> Literal[
@@ -1980,7 +2712,8 @@ def route_after_supervisor(state: AgentState) -> Literal[
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
     "TASK_WRITE_Node", "TASK_READ_Node", "TASK_ACTION_Node",
-    "DRIVE_SEARCH_Node", "DRIVE_LIST_Node", "Aggregator_Node"
+    "DRIVE_SEARCH_Node", "DRIVE_LIST_Node", "PEOPLE_SEARCH_Node",
+    "SHEET_READ_Node", "SHEET_WRITE_Node", "DOCS_CREATE_Node", "Aggregator_Node"
 ]:
     return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
 
@@ -2007,6 +2740,10 @@ workflow.add_conditional_edges(
         "TASK_ACTION_Node": "TASK_ACTION_Node",
         "DRIVE_SEARCH_Node": "DRIVE_SEARCH_Node",
         "DRIVE_LIST_Node": "DRIVE_LIST_Node",
+        "PEOPLE_SEARCH_Node": "PEOPLE_SEARCH_Node",
+        "SHEET_READ_Node": "SHEET_READ_Node",
+        "SHEET_WRITE_Node": "SHEET_WRITE_Node",
+        "DOCS_CREATE_Node": "DOCS_CREATE_Node",
         "Aggregator_Node": "Aggregator_Node",
     }
 )
@@ -2018,7 +2755,8 @@ def route_after_dispatcher(state: AgentState) -> Literal[
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
     "TASK_WRITE_Node", "TASK_READ_Node", "TASK_ACTION_Node",
-    "DRIVE_SEARCH_Node", "DRIVE_LIST_Node", "Aggregator_Node"
+    "DRIVE_SEARCH_Node", "DRIVE_LIST_Node", "PEOPLE_SEARCH_Node",
+    "SHEET_READ_Node", "SHEET_WRITE_Node", "DOCS_CREATE_Node", "Aggregator_Node"
 ]:
     return INTENT_NODE_MAP.get(state["current_intent"], "Aggregator_Node")
 
@@ -2045,6 +2783,10 @@ workflow.add_conditional_edges(
         "TASK_ACTION_Node": "TASK_ACTION_Node",
         "DRIVE_SEARCH_Node": "DRIVE_SEARCH_Node",
         "DRIVE_LIST_Node": "DRIVE_LIST_Node",
+        "PEOPLE_SEARCH_Node": "PEOPLE_SEARCH_Node",
+        "SHEET_READ_Node": "SHEET_READ_Node",
+        "SHEET_WRITE_Node": "SHEET_WRITE_Node",
+        "DOCS_CREATE_Node": "DOCS_CREATE_Node",
         "Aggregator_Node": "Aggregator_Node",
     }
 )
@@ -2082,6 +2824,10 @@ workflow.add_edge("TASK_READ_Node", "Dispatcher")
 workflow.add_edge("TASK_ACTION_Node", "Dispatcher")
 workflow.add_edge("DRIVE_SEARCH_Node", "Dispatcher")
 workflow.add_edge("DRIVE_LIST_Node", "Dispatcher")
+workflow.add_edge("PEOPLE_SEARCH_Node", "Dispatcher")
+workflow.add_edge("SHEET_READ_Node", "Dispatcher")
+workflow.add_edge("SHEET_WRITE_Node", "Dispatcher")
+workflow.add_edge("DOCS_CREATE_Node", "Dispatcher")
 
 # Aggregator → END
 workflow.add_edge("Aggregator_Node", END)
