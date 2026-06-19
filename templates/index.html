@@ -296,6 +296,86 @@
 
   <script>
     // ====================================================================
+    // [SECTION 3.5] 모바일 WebView 감지 및 시스템 브라우저 리다이렉트
+    // Google 정책: WebView/인앱 브라우저에서 OAuth 차단 (403 disallowed_useragent)
+    // ====================================================================
+    function detectWebViewEnv() {
+      const ua = navigator.userAgent;
+      const isAndroid = /Android/i.test(ua);
+      const isIOS = /iPhone|iPad|iPod/i.test(ua);
+      // 알려진 인앱 브라우저 패턴 (카카오톡, 네이버앱, LINE, Instagram, Facebook, WeChat)
+      const isKnownInApp = /KAKAOTALK|NAVER\(inapp|Line\/|Instagram|FBAN|FBAV|MicroMessenger/i.test(ua);
+      // Android WebView 시그니처: "; wv)" 포함 또는 인앱 패턴
+      const isAndroidWebView = isAndroid && (/; wv\)/.test(ua) || isKnownInApp);
+      // iOS WebView: Safari 헤더 없고 Chrome/Firefox for iOS도 아닌 경우
+      const isIOSWebView = isIOS && !(/Safari\/[\d.]+/.test(ua)) && !(/CriOS|FxiOS/.test(ua));
+      return {
+        isMobile: isAndroid || isIOS,
+        isAndroid,
+        isIOS,
+        isWebView: isAndroidWebView || isIOSWebView,
+      };
+    }
+
+    // Android에서 Chrome 강제 오픈용 intent:// URL 생성
+    function buildChromeIntentUrl(targetUrl) {
+      return 'intent://' + targetUrl.replace(/^https?:\/\//, '') +
+        '#Intent;scheme=https;action=android.intent.action.VIEW;package=com.android.chrome;end';
+    }
+
+    // WebView 접속 시 전체화면 차단 오버레이 표시
+    function showWebViewBlocker() {
+      const env = detectWebViewEnv();
+      if (!env.isWebView) return;
+
+      const overlay = document.createElement('div');
+      overlay.id = 'webview-blocker';
+      overlay.style.cssText = [
+        'position:fixed', 'inset:0', 'background:#0f172a', 'display:flex',
+        'flex-direction:column', 'align-items:center', 'justify-content:center',
+        'z-index:99999', 'padding:24px', 'text-align:center',
+      ].join(';');
+
+      const chromeIntentUrl = buildChromeIntentUrl(window.location.href);
+      const currentUrl = window.location.href;
+
+      overlay.innerHTML = `
+        <div style="max-width:320px;">
+          <div style="font-size:48px;margin-bottom:16px;">🔒</div>
+          <h2 style="color:#f1f5f9;font-size:20px;font-weight:700;margin-bottom:12px;font-family:sans-serif;">
+            내장 브라우저에서 접속 불가
+          </h2>
+          <p style="color:#94a3b8;font-size:14px;line-height:1.7;margin-bottom:24px;font-family:sans-serif;">
+            Google 보안 정책으로 인해 앱 내 브라우저에서는<br>코봇에 접속할 수 없습니다.<br>
+            <strong style="color:#e2e8f0;">Chrome 또는 Safari에서 열어주세요.</strong>
+          </p>
+          ${env.isAndroid ? `
+            <a href="${chromeIntentUrl}"
+               style="display:block;background:#1A56DB;color:#fff;padding:14px 24px;border-radius:8px;
+                      font-size:15px;font-weight:600;text-decoration:none;margin-bottom:12px;font-family:sans-serif;">
+              Chrome으로 열기
+            </a>
+          ` : `
+            <button onclick="navigator.clipboard.writeText('${currentUrl}').then(()=>alert('주소가 복사되었습니다. Safari에서 붙여넣기 해주세요.'))"
+               style="display:block;width:100%;background:#1A56DB;color:#fff;padding:14px 24px;border-radius:8px;
+                      font-size:15px;font-weight:600;border:none;cursor:pointer;margin-bottom:12px;font-family:sans-serif;">
+              주소 복사 (Safari에서 열기)
+            </button>
+          `}
+          <p style="color:#475569;font-size:12px;font-family:monospace;word-break:break-all;">
+            ${window.location.host}
+          </p>
+        </div>`;
+
+      document.body.appendChild(overlay);
+
+      // Android: intent:// 리다이렉트도 병행 시도 (앱이 intent URL을 지원하는 경우 자동 전환)
+      if (env.isAndroid) {
+        setTimeout(() => { window.location.replace(chromeIntentUrl); }, 300);
+      }
+    }
+
+    // ====================================================================
     // [SECTION 4] 글로벌 상주형 데이터 장부 및 타이핑 애니메이션 자원 (JS States)
     // ====================================================================
     let globalLastUserQuery = "";
@@ -392,6 +472,9 @@
     // [SECTION 5] Pure REST API 초고속 웹 표준 통신 레이어 (Core Fetch Engines)
     // ====================================================================
     window.onload = async function() {
+      // WebView 인앱 브라우저 감지 → 차단 오버레이 (Google 403 disallowed_useragent 방지)
+      showWebViewBlocker();
+
       // user-info 와 history를 병렬 실행 (순차 → 합산 시간 / 병렬 → max 시간)
       await Promise.allSettled([
         fetch("/api/user-info")
@@ -680,28 +763,55 @@
           try {
             const authRes = await fetch(`/api/auth/google?email=${encodeURIComponent(data.auth_email)}`);
             const authData = await authRes.json();
-            const popup = window.open(authData.auth_url, 'google-oauth-popup', 'width=520,height=680,top=100,left=200');
-            showToast("🔐 구글 계정 인증창이 열렸습니다. 권한 승인 후 자동으로 재시도됩니다.");
+            const env = detectWebViewEnv();
 
-            const pollTimer = setInterval(async () => {
-              if (!popup || popup.closed) {
-                clearInterval(pollTimer);
-                showToast("✅ 인증 완료! 잠시 후 답변드립니다...");
-                try {
-                  const retryRes = await fetch("/api/chat", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(requestPayload)
-                  });
-                  if (!retryRes.ok) throw new Error(`재시도 실패 (${retryRes.status})`);
-                  const retryData = await retryRes.json();
-                  showAIResponse(retryData, currentMsgId, query);
-                  await renderHistoryDashboardGrid();
-                } catch (retryErr) {
-                  showError(retryErr);
-                }
+            if (env.isWebView && env.isAndroid) {
+              // Android WebView: OAuth URL을 Chrome으로 강제 오픈 (intent:// scheme)
+              window.open(buildChromeIntentUrl(authData.auth_url), '_blank');
+              showToast("🔐 Chrome에서 구글 인증을 완료 후 앱으로 돌아와 다시 질문해 주세요.");
+              if (aiDiv) {
+                aiDiv.innerHTML = '<p class="text-slate-400 text-sm">🔐 Chrome에서 구글 계정 인증을 완료한 후 이 앱으로 돌아와서 다시 질문해 주세요.</p>';
               }
-            }, 1000);
+            } else if (env.isWebView && env.isIOS) {
+              // iOS WebView: Safari로 이동 불가, 인증 URL 복사 안내
+              const safeUrl = authData.auth_url.replace(/'/g, "\\'");
+              if (aiDiv) {
+                aiDiv.innerHTML = `
+                  <div style="padding:12px;">
+                    <p style="color:#64748b;font-size:14px;margin-bottom:10px;">
+                      🔐 Safari를 열고 아래 인증 주소로 이동하여 구글 계정 인증을 완료해 주세요.
+                    </p>
+                    <button onclick="navigator.clipboard.writeText('${safeUrl}').then(()=>showToast('인증 주소가 복사되었습니다. Safari에서 붙여넣기 해주세요.'))"
+                      style="background:#1A56DB;color:#fff;padding:10px 18px;border-radius:6px;border:none;cursor:pointer;font-size:13px;font-weight:600;">
+                      인증 주소 복사
+                    </button>
+                  </div>`;
+              }
+            } else {
+              // 데스크톱 또는 일반 모바일 브라우저: 기존 팝업 방식
+              const popup = window.open(authData.auth_url, 'google-oauth-popup', 'width=520,height=680,top=100,left=200');
+              showToast("🔐 구글 계정 인증창이 열렸습니다. 권한 승인 후 자동으로 재시도됩니다.");
+
+              const pollTimer = setInterval(async () => {
+                if (!popup || popup.closed) {
+                  clearInterval(pollTimer);
+                  showToast("✅ 인증 완료! 잠시 후 답변드립니다...");
+                  try {
+                    const retryRes = await fetch("/api/chat", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(requestPayload)
+                    });
+                    if (!retryRes.ok) throw new Error(`재시도 실패 (${retryRes.status})`);
+                    const retryData = await retryRes.json();
+                    showAIResponse(retryData, currentMsgId, query);
+                    await renderHistoryDashboardGrid();
+                  } catch (retryErr) {
+                    showError(retryErr);
+                  }
+                }
+              }, 1000);
+            }
           } catch (authErr) {
             showError(authErr);
           }
