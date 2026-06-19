@@ -33,14 +33,44 @@ def get_query_embedding(text: str) -> list:
 # =====================================================================
 # 🚀 2단계: 하이브리드 RAG 검색 (Vector + Keyword + ACL)
 # =====================================================================
-def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 3) -> tuple:
+_QUERY_STOPWORDS = {
+    '알려줘', '알려주세요', '알려줄', '설명해줘', '설명해주세요', '정리해줘', '정리해주세요',
+    '뭐야', '뭔가요', '무엇인가요', '어떻게', '어떤', '어디서', '언제', '왜', '이게', '그게',
+    '해줘', '해주세요', '좀', '부탁드려요', '도와줘', '있어', '있나요', '있어요',
+}
+
+_BROAD_QUERY_PATTERNS = [
+    '알려줘', '알려주세요', '설명해줘', '설명해주세요', '정리해줘', '정리해주세요',
+    '전체', '종류', '목록', '리스트', '항목', '어떤게 있', '어떤 것들',
+]
+
+def is_broad_query(query: str) -> bool:
+    """포괄적인 정보 요청 쿼리 여부를 판별합니다."""
+    return any(pattern in query for pattern in _BROAD_QUERY_PATTERNS)
+
+def _expand_query(user_query: str) -> str | None:
+    """광범위 쿼리에 대해 보조 검색 쿼리를 반환합니다. 특정 쿼리는 None 반환."""
+    pairs = [
+        ('복리후생 제도', '코웨이 복리후생 규정 전체'),
+        ('복리후생 규정', '코웨이 복리후생 제도 안내'),
+        ('복리후생', '복지포인트 경조사 휴가 지원'),
+        ('출장 규정', '출장비 여비 지급 기준'),
+        ('휴가 제도', '연차 특별휴가 출산휴가'),
+    ]
+    q = user_query.replace('알려줘', '').replace('설명해줘', '').replace('정리해줘', '').strip()
+    for keyword, expansion in pairs:
+        if keyword in q:
+            return expansion
+    return None
+
+def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 6) -> tuple:
     """빅쿼리 내장 머신러닝 기능을 활용해 권한이 통과된 문서 중 최고 적합도를 찾습니다."""
     query_vector = get_query_embedding(user_query)
-    
-    # 키워드 가점을 위한 불용어 제거 (간단한 핵심 명사 추출)
+
+    # 핵심 키워드 다중 추출: 불용어 제거 후 최대 4개 단어를 OR 패턴으로 결합
     clean_query = ''.join(e for e in user_query if e.isalnum() or e.isspace())
-    # 🛡️ [IndexError 방어 패치] 특수문자 진입 시 서버 다운 차단 방어선
-    core_keyword = clean_query.split()[0] if clean_query.split() else user_query
+    words = [w for w in clean_query.split() if w not in _QUERY_STOPWORDS and len(w) > 1]
+    core_keyword = '|'.join(words[:4]) if words else (clean_query.strip() or user_query)
     
     # 👑 아키텍트의 예술: 빅쿼리 하이브리드 SQL (문법 규정 준수 버전)
     sql = f"""
@@ -56,7 +86,7 @@ def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 3) -> tuple:
             ),
             'embedding',
             (SELECT @query_vector AS query_vector),
-            top_k => 10,
+            top_k => 20,
             distance_type => 'COSINE'
         )
     )
@@ -86,18 +116,18 @@ def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 3) -> tuple:
     )
 
     results = bq_client.query(sql, job_config=job_config).result()
-    
+
     # =====================================================================
     # 📦 3단계: LLM에게 먹여줄 '지식 캡슐(Context)' 조립
     # =====================================================================
     retrieved_docs = []
-    top_dept_code = "분류 불가"  # 기본값 세팅
+    seen_urls = set()
+    top_dept_code = "분류 불가"
 
     for i, row in enumerate(results):
         if i == 0:
-            # 🎯 [V2 핵심] 점수 미달로 답변은 못 하더라도 그나마 가장 유력한 1등 문서의 부서 코드를 자동으로 낚아챕니다!
             top_dept_code = row.dept_code if row.dept_code else "분류 불가"
-
+        seen_urls.add(row.doc_url)
         doc_info = (
             f"[문서명]: {row.doc_name}\n"
             f"[담당부서]: {row.dept_code}\n"
@@ -106,11 +136,46 @@ def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 3) -> tuple:
             f"[상세 내용]:\n{row.content}\n"
         )
         retrieved_docs.append(doc_info)
-        print(f"🎯 [RAG 검색 성공] {row.doc_name} (Hybrid Score: {row.hybrid_score:.4f} / Distance: {row.distance:.4f})")
-        
+        print(f"🎯 [RAG 1차] {row.doc_name} (Hybrid: {row.hybrid_score:.4f})")
+
+    # 쿼리 확장: 광범위 질문은 보조 쿼리로 2차 검색해 누락 문서 보완
+    expanded_query = _expand_query(user_query)
+    if expanded_query and is_broad_query(user_query):
+        print(f"🔄 [RAG 쿼리확장] 2차 검색: '{expanded_query}'")
+        try:
+            exp_vector = get_query_embedding(expanded_query)
+            exp_clean = ''.join(e for e in expanded_query if e.isalnum() or e.isspace())
+            exp_words = [w for w in exp_clean.split() if w not in _QUERY_STOPWORDS and len(w) > 1]
+            exp_keyword = '|'.join(exp_words[:4]) if exp_words else expanded_query
+            exp_top_k = max(top_k, 6)
+            exp_job = QueryJobConfig(
+                query_parameters=[
+                    ArrayQueryParameter("query_vector", "FLOAT64", exp_vector),
+                    ScalarQueryParameter("user_email", "STRING", user_email),
+                    ScalarQueryParameter("core_keyword", "STRING", exp_keyword),
+                    ScalarQueryParameter("top_k", "INT64", exp_top_k),
+                ]
+            )
+            exp_results = bq_client.query(sql, job_config=exp_job).result()
+            added = 0
+            for row in exp_results:
+                if row.doc_url not in seen_urls:
+                    seen_urls.add(row.doc_url)
+                    doc_info = (
+                        f"[문서명]: {row.doc_name}\n"
+                        f"[담당부서]: {row.dept_code}\n"
+                        f"[최종수정일]: {row.last_modified}\n"
+                        f"[문서URL]: {row.doc_url}\n"
+                        f"[상세 내용]:\n{row.content}\n"
+                    )
+                    retrieved_docs.append(doc_info)
+                    added += 1
+                    print(f"🎯 [RAG 2차 보완] {row.doc_name} (Hybrid: {row.hybrid_score:.4f})")
+            print(f"📌 [쿼리확장] 2차에서 {added}개 추가 문서 보완")
+        except Exception as e:
+            print(f"⚠️ [쿼리확장] 2차 검색 실패, 1차 결과만 사용: {e}")
+
     context_text = "\n\n---\n\n".join(retrieved_docs)
-    
-    # 🎯 [리턴 구조 업그레이드] (컨텍스트 본문, 1등 부서명) 튜플 형태로 리턴
     return context_text, top_dept_code
 
 # =====================================================================

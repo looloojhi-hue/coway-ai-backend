@@ -120,12 +120,47 @@ async def read_root(request: Request):
 # ====================================================================
 @app.get("/api/user-info")
 async def get_user_info(user_email: str = Depends(get_iap_user_email)):
-    user_name = user_email.split('@')[0]
-    return {
-        "name": user_name,
-        "dept": "COWAY 임직원",
-        "email": user_email
-    }
+    import time
+    display_name = user_email.split('@')[0]
+
+    # Firestore 캐시 조회 (People API 호출 생략, ~50ms)
+    cache_key = user_email.replace('@', '__at__').replace('.', '__')
+    cache_ref = db_fs.collection("user_info_cache").document(cache_key)
+    try:
+        cached_doc = cache_ref.get()
+        if cached_doc.exists:
+            data = cached_doc.to_dict()
+            if time.time() - data.get('cached_at', 0) < 86400:  # 24h TTL
+                return {"name": data['name'], "email": user_email}
+    except Exception:
+        pass
+
+    # 캐시 미스 시 People API 조회 (첫 접속 또는 TTL 만료)
+    try:
+        from graph import get_workspace_service
+        people_svc = get_workspace_service('people', 'v1', user_email)
+        result = people_svc.people().searchDirectoryPeople(
+            query=user_email,
+            readMask='names',
+            sources=['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+            pageSize=1
+        ).execute()
+        people = result.get('people', [])
+        if people and people[0].get('names'):
+            raw = people[0]['names'][0].get('displayName', '')
+            korean_name = raw.split('[')[0].strip()
+            if korean_name:
+                display_name = korean_name
+    except Exception:
+        pass
+
+    # Firestore에 결과 캐시 저장
+    try:
+        cache_ref.set({'name': display_name, 'cached_at': time.time()})
+    except Exception:
+        pass
+
+    return {"name": display_name, "email": user_email}
 
 # ====================================================================
 # [SECTION 5] 🤖 [WBS 3.0] Cloud Run 중앙 오케스트레이션 대화 엔진 (정공법 완공본)
@@ -621,6 +656,8 @@ async def get_chat_history_list(user_email: str = Depends(get_iap_user_email)):
                 "is_pinned": data.get("is_pinned", False),
                 "updated_at": data.get("updated_at").isoformat() if data.get("updated_at") else ""
             })
+        # 즐겨찾기(pinned) 우선 정렬, 같은 그룹 내에서는 updated_at DESC 유지
+        history_list.sort(key=lambda x: 0 if x['is_pinned'] else 1)
         return {"success": True, "sessions": history_list}
     except Exception as e:
         print(f"⚠️ [목록 조회 패닉] {e}")

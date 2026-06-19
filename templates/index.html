@@ -14,66 +14,71 @@
     .glass-effect { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
     .fade-in { animation: fadeIn 0.5s ease-out forwards; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-    
-    /* 인용구 출처 연결 배지 스타일 */
-    .citation-chip { 
+    @media (prefers-reduced-motion: reduce) {
+      .fade-in { animation: none; }
+      .animate-bounce, .animate-spin, .animate-pulse { animation: none !important; }
+    }
+
+    /* [개선5] AI 메시지 카드 — 왼쪽 파란 accent bar */
+    .ai-msg-card { border-left: 4px solid #1A56DB !important; border-top-left-radius: 0 !important; border-bottom-left-radius: 0 !important; }
+
+    /* [개선4] 인용구 배지 */
+    .citation-chip {
       display: inline-flex; align-items: center; justify-content: center;
       min-width: 18px; height: 18px; font-size: 10px; font-weight: bold;
-      background-color: #3b82f6; color: white; border-radius: 4px;
+      background-color: #1A56DB; color: white; border-radius: 4px;
       margin-left: 4px; margin-right: 2px; vertical-align: middle; cursor: pointer;
       padding: 0 4px;
     }
-    /* 출처 카드 포커스 하이라이트 */
-    .highlight-card { border: 2px solid #3b82f6 !important; background-color: #eff6ff !important; transition: all 0.3s ease; }
-    /* 규정 내 수치 하이라이트 */
-    .highlight-text { color: #2563eb; font-weight: 700; background: #eff6ff; padding: 0 2px; border-radius: 2px; }
-    
-    /* 마크다운 변환 본문 가독성 전사 표준 스타일 지정 */
-    .summary-content { font-size: 15px; color: #334155; line-height: 1.7; overflow-wrap: break-word; word-break: break-word; overflow-x: hidden; max-width: 100%; }
+    .highlight-card { border: 2px solid #1A56DB !important; background-color: #EEF3FF !important; transition: all 0.3s ease; }
+    .highlight-text { color: #1A56DB; font-weight: 700; background: #EEF3FF; padding: 0 2px; border-radius: 2px; }
+
+    /* [개선2] 마크다운 본문 — 14px 통일 */
+    .summary-content { font-size: 14px; color: #334155; line-height: 1.7; overflow-wrap: break-word; word-break: break-word; overflow-x: hidden; max-width: 100%; }
     .summary-content pre { white-space: pre-wrap; word-break: break-all; overflow-x: auto; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; font-size: 13px; max-width: 100%; }
     .summary-content code { word-break: break-all; white-space: pre-wrap; }
-    .summary-content h1, .summary-content h2, .summary-content h3 { 
-      font-weight: 700; color: #1e3a8a; 
+    .summary-content h1, .summary-content h2, .summary-content h3 {
+      font-weight: 700; color: #1A3A6B;
       display: block; margin-top: 20px; margin-bottom: 8px;
     }
-    .summary-content strong { font-weight: 700; color: #1e3a8a; }
+    .summary-content strong { font-weight: 700; color: #1A3A6B; }
     .summary-content ul { list-style-type: disc; padding-left: 20px; margin-bottom: 12px; }
     .summary-content ol { list-style-type: decimal; padding-left: 20px; margin-bottom: 12px; }
     .summary-content li { margin-bottom: 6px; padding-left: 4px; }
     .summary-content p { margin-bottom: 12px; }
 
-    /* 📊 [수석 비서 고밀도 대형 도표 인텔리전트 자율 가드 디자인 패치] */
     .summary-content table {
       display: table;
       width: 100%;
-      table-layout: auto; /* 브라우저가 셀 텍스트 밀도를 파악하여 컬럼 폭 자율 안착 */
+      table-layout: auto;
       margin: 18px 0;
-      font-size: 13px; /* 대형 예산/지표 데이터에 특화된 가독성 폰트 스케일 */
+      font-size: 13px;
       background-color: #ffffff;
       border: 1px solid #e2e8f0;
       border-radius: 12px;
       box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05);
-      word-break: keep-all; /* 단어 쪼개짐 방지 방화벽 */
+      word-break: keep-all;
     }
     .summary-content th {
       background-color: #f8fafc;
-      color: #1e3a8a;
+      color: #1A3A6B;
       font-weight: 600;
       border: 1px solid #e2e8f0;
       padding: 10px 12px;
       text-align: center;
     }
+    /* [개선2] td 12px 통일 */
     .summary-content td {
       border: 1px solid #e2e8f0;
       padding: 10px 12px;
       color: #334155;
       text-align: center;
       vertical-align: middle;
-      font-size: 12.5px; /* 데이터 밀도 과밀 시 자율 압축용 서브 스케일 */
-      white-space: normal; /* 가로 찢어짐을 원천 차단하고 자연스러운 셀 내부 멀티 라인 허용 */
+      font-size: 12px;
+      white-space: normal;
       line-height: 1.5;
     }
-    .summary-content tr:nth-child(even) { background-color: rgba(59, 130, 246, 0.03); }
+    .summary-content tr:nth-child(even) { background-color: rgba(26, 86, 219, 0.03); }
     .summary-content tr:hover { background-color: #f1f5f9; transition: background-color 0.2s ease; }
   </style>
 </head>
@@ -83,12 +88,12 @@
     
     <header class="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-6">
       <div class="flex items-center gap-3 cursor-pointer" onclick="resetUI()">
-        <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">C</div>
-        <span class="font-bold text-lg tracking-tight text-slate-800">Coway AI Chatbot</span> 
+        <div class="w-8 h-8 bg-[#1A56DB] rounded-lg flex items-center justify-center text-white font-bold">C</div>
+        <span class="font-bold text-lg tracking-tight text-slate-800">Coway AI Chatbot</span>
       </div>
       <div class="flex items-center gap-4">
-        <button onclick="startBrandNewChat()" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 hover:text-blue-600 transition-all shadow-sm">
-          <i data-lucide="plus-circle" class="w-4 h-4 text-blue-500"></i> 새 대화 시작
+        <button onclick="startBrandNewChat()" aria-label="새 대화 시작" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 hover:text-[#1A56DB] transition-all shadow-sm">
+          <i data-lucide="plus-circle" class="w-4 h-4 text-[#1A56DB]"></i> 새 대화 시작
         </button>
         <div id="user-profile" class="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl">
           <i data-lucide="user" class="w-4 h-4 text-slate-400"></i>
@@ -101,7 +106,7 @@
       
       <div id="dashboard-view" class="w-full max-w-6xl px-6 py-10 md:py-16 transition-all duration-500">
         <div class="mb-8 text-center md:text-left">
-          <h1 class="text-3xl md:text-4xl font-bold text-slate-900 mb-3 tracking-tight">
+          <h1 class="text-3xl md:text-4xl font-bold text-slate-900 mb-3 tracking-tight" id="main-greeting">
             안녕하세요! <span class="text-blue-600">AI 챗봇</span>입니다.
           </h1>
           <p class="text-slate-500 text-lg">어떤 정보가 필요하신가요?</p>
@@ -112,13 +117,13 @@
           <button onclick="fillCapabilityChip('오늘 안 읽은 메일 요약해줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
             <i data-lucide="mail" class="w-3.5 h-3.5 text-blue-500"></i> 이메일 브리핑
           </button>
-          <button onclick="fillCapabilityChip('오늘 오후 2시~3시 00 회의 잡아줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
+          <button onclick="fillCapabilityChip('OO팀 OOO님을 내일 오후 3시~4시에 팀 업무 회의로 캘린더 초대해줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
             <i data-lucide="calendar" class="w-3.5 h-3.5 text-emerald-500"></i> 캘린더 등록
           </button>
           <button onclick="fillCapabilityChip('오늘 오후까지 업무 기획안 작성 할 일 등록해줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
             <i data-lucide="check-square" class="w-3.5 h-3.5 text-indigo-500"></i> 할 일(TASK) 등록
           </button>
-          <button onclick="fillCapabilityChip('경조금 신청 자격 조건이 어떻게 돼?')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
+          <button onclick="fillCapabilityChip('출장 규정에 대해 알려줘')" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-full text-xs font-bold text-slate-600 hover:bg-blue-50 hover:border-blue-400 hover:text-blue-600 transition-all shadow-sm">
             <i data-lucide="book-open" class="w-3.5 h-3.5 text-orange-500"></i> 규정&매뉴얼 검색
           </button>
         </div>
@@ -127,62 +132,74 @@
           <div class="absolute inset-y-0 left-4 sm:left-5 flex items-center pointer-events-none">
             <i data-lucide="search" class="w-5 h-5 sm:w-6 sm:h-6 text-slate-400 group-focus-within:text-blue-500 transition-colors"></i>
           </div>
-          <input type="text" id="main-search-input" onkeydown="if(event.key==='Enter') handleSearch('main-search-input')" class="w-full bg-white border border-slate-200 rounded-2xl py-4 sm:py-5 pl-12 sm:pl-14 pr-16 sm:pr-36 text-base sm:text-lg shadow-xl shadow-slate-200/50 outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder:text-slate-300" placeholder="규정, 매뉴얼, 사내 가이드 검색...">
-          <button onclick="handleSearch('main-search-input')" class="absolute right-2 sm:right-3 inset-y-2 sm:inset-y-3 bg-blue-600 text-white px-4 sm:px-6 rounded-xl font-bold hover:bg-blue-700 transition-all flex items-center gap-2">
+          <input type="text" id="main-search-input" onkeydown="if(event.key==='Enter') handleSearch('main-search-input')" aria-label="검색 입력창" class="w-full bg-white border border-slate-200 rounded-2xl py-4 sm:py-5 pl-12 sm:pl-14 pr-16 sm:pr-36 text-base sm:text-lg shadow-xl shadow-slate-200/50 outline-none focus:ring-2 focus:ring-[#1A56DB] transition-all placeholder:text-slate-400" placeholder="규정, 매뉴얼, 사내 가이드 검색...">
+          <button onclick="handleSearch('main-search-input')" aria-label="질문하기" class="absolute right-2 sm:right-3 inset-y-2 sm:inset-y-3 bg-[#1A56DB] text-white px-4 sm:px-6 rounded-xl font-bold hover:bg-[#1343B5] transition-all flex items-center gap-2">
             <span class="hidden sm:inline">질문하기</span>
             <i data-lucide="send" class="w-4 h-4 sm:w-5 sm:h-5"></i>
           </button>
         </div>
 
-        <div id="history-container" class="mb-10 hidden">
-          <div class="mb-4 flex items-center justify-between">
-            <span class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-              <i data-lucide="clock" class="w-4 h-4 text-blue-500"></i> 챗봇 히스토리
-            </span>
-          </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="history-card-grid"></div>
-        </div>
-
-        <div class="mb-4"><span class="text-xs font-bold text-slate-400 uppercase tracking-widest">💡 자주 묻는 질문 (Quick Search)</span></div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-10">
-          <div onclick="quickSearch('복리후생 제도 알려줘')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
-            <div class="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="heart" class="w-5 h-5"></i></div>
-            <h3 class="font-bold text-slate-800 text-sm">복리후생</h3>
-            <p class="text-[11px] text-slate-500 mt-1">포인트, 연차, 경조사</p>
-          </div>
-          <div onclick="quickSearch('IT 보안 가이드라인 요약해줘')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
-            <div class="w-10 h-10 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="shield-check" class="w-5 h-5"></i></div>
-            <h3 class="font-bold text-slate-800 text-sm">IT/보안</h3>
-            <p class="text-[11px] text-slate-500 mt-1">비밀번호, 보안 메일</p>
-          </div>
-          <div onclick="quickSearch('재무업무 매뉴얼')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
-            <div class="w-10 h-10 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="credit-card" class="w-5 h-5"></i></div>
-            <h3 class="font-bold text-slate-800 text-sm">재무업무 매뉴얼</h3>
-            <p class="text-[11px] text-slate-500 mt-1">비용전표, 법인카드</p>
-          </div>
-          <div onclick="quickSearch('출장 규정 및 매뉴얼')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-200 cursor-pointer transition-all group">
-            <div class="w-10 h-10 bg-slate-50 text-slate-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors"><i data-lucide="file-text" class="w-5 h-5"></i></div>
-            <h3 class="font-bold text-slate-800 text-sm">출장 매뉴얼</h3>
-            <p class="text-[11px] text-slate-500 mt-1">출장규정, 출장매뉴얼</p>
+        <!-- ===== 챗봇 히스토리 섹션 ===== -->
+        <div id="history-container" class="mb-5">
+          <div class="bg-slate-50 rounded-2xl p-5 border border-slate-200">
+            <div class="flex items-center gap-3 mb-4 pl-3 border-l-4 border-[#1A56DB]">
+              <i data-lucide="clock" class="w-4 h-4 text-[#1A56DB] shrink-0"></i>
+              <div>
+                <p class="text-sm font-bold text-slate-700">챗봇 히스토리</p>
+                <p class="text-xs text-slate-400 mt-0.5">최근 대화를 이어서 시작하세요</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3" id="history-card-grid">
+              <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm animate-pulse"><div class="h-3 bg-slate-200 rounded w-3/4 mb-3"></div><div class="h-2 bg-slate-100 rounded w-1/2"></div></div>
+              <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm animate-pulse"><div class="h-3 bg-slate-200 rounded w-3/4 mb-3"></div><div class="h-2 bg-slate-100 rounded w-1/2"></div></div>
+              <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm animate-pulse"><div class="h-3 bg-slate-200 rounded w-3/4 mb-3"></div><div class="h-2 bg-slate-100 rounded w-1/2"></div></div>
+            </div>
           </div>
         </div>
 
-        <div class="mb-4"><span class="text-xs font-bold text-slate-400 uppercase tracking-widest">🏢 부서별 전문 챗봇</span></div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div onclick="window.open('https://notebooklm.google.com/notebook/3886581b-615d-4302-95b8-33924b0a0b01', '_blank')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-indigo-200 cursor-pointer transition-all flex items-center gap-4 group">
-            <div class="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors shrink-0"><i data-lucide="users" class="w-6 h-6"></i></div>
+        <!-- ===== 자주 묻는 질문 섹션 ===== -->
+        <div class="mb-5 bg-emerald-50/60 rounded-2xl p-5 border border-emerald-100">
+          <div class="flex items-center gap-3 mb-4 pl-3 border-l-4 border-emerald-500">
+            <i data-lucide="help-circle" class="w-4 h-4 text-emerald-600 shrink-0"></i>
             <div>
-              <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5">총무팀 출장 규정 전문 봇 <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity"></i></h4>
-              <p class="text-xs text-slate-400 mt-0.5">출장규정, 매뉴얼, 출장FAQ 전용 챗봇</p>
+              <p class="text-sm font-bold text-slate-700">자주 묻는 질문</p>
+              <p class="text-xs text-slate-400 mt-0.5">클릭하면 바로 검색됩니다</p>
             </div>
           </div>
-          <div onclick="window.open('https://script.google.com/a/macros/coway.com/s/AKfycbyg9mY0evZjZUVKWIV91Y_7R_h3qoy0-ajAjmsz-Ini7OLJIgCve5w-h5SC541rgfQdtg/exec', '_blank')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-cyan-200 cursor-pointer transition-all flex items-center gap-4 group">
-            <div class="w-12 h-12 bg-cyan-50 text-cyan-600 rounded-xl flex items-center justify-center group-hover:bg-cyan-600 group-hover:text-white transition-colors shrink-0"><i data-lucide="monitor" class="w-6 h-6"></i></div>
-            <div>
-              <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5">안전보건 전문 봇 <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity"></i></h4>
-              <p class="text-xs text-slate-400 mt-0.5">산업재해, 안전보건(검진,화학물질) 전용 챗봇</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            <div onclick="quickSearch('복리후생 제도 알려줘')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-[#1A56DB]/40 cursor-pointer transition-all group">
+              <div class="w-10 h-10 bg-blue-50 text-[#1A56DB] rounded-xl flex items-center justify-center mb-4 group-hover:bg-[#1A56DB] group-hover:text-white transition-colors"><i data-lucide="heart" class="w-5 h-5"></i></div>
+              <h3 class="font-bold text-slate-800 text-sm">복리후생</h3>
+              <p class="text-xs text-slate-500 mt-1">포인트, 연차, 경조사</p>
+            </div>
+            <div onclick="quickSearch('AX 가이드 및 AI 도구 활용 방법 알려줘')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-violet-300 cursor-pointer transition-all group">
+              <div class="w-10 h-10 bg-violet-50 text-violet-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-violet-600 group-hover:text-white transition-colors"><i data-lucide="shield-check" class="w-5 h-5"></i></div>
+              <h3 class="font-bold text-slate-800 text-sm">IT/AX</h3>
+              <p class="text-xs text-slate-500 mt-1">AX 가이드, AI도구 가이드</p>
+            </div>
+            <div onclick="quickSearch('재무업무 매뉴얼')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-emerald-300 cursor-pointer transition-all group">
+              <div class="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mb-4 group-hover:bg-emerald-600 group-hover:text-white transition-colors"><i data-lucide="credit-card" class="w-5 h-5"></i></div>
+              <h3 class="font-bold text-slate-800 text-sm">재무업무 매뉴얼</h3>
+              <p class="text-xs text-slate-500 mt-1">비용전표, 법인카드</p>
+            </div>
+            <div onclick="quickSearch('출장 규정 및 매뉴얼')" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-orange-300 cursor-pointer transition-all group">
+              <div class="w-10 h-10 bg-orange-50 text-orange-500 rounded-xl flex items-center justify-center mb-4 group-hover:bg-orange-500 group-hover:text-white transition-colors"><i data-lucide="file-text" class="w-5 h-5"></i></div>
+              <h3 class="font-bold text-slate-800 text-sm">출장 매뉴얼</h3>
+              <p class="text-xs text-slate-500 mt-1">출장규정, 출장매뉴얼</p>
             </div>
           </div>
+        </div>
+
+        <!-- ===== 부서별 전문 챗봇 섹션 ===== -->
+        <div class="mb-5 bg-violet-50/60 rounded-2xl p-5 border border-violet-100">
+          <div class="flex items-center gap-3 mb-4 pl-3 border-l-4 border-violet-500">
+            <i data-lucide="building-2" class="w-4 h-4 text-violet-600 shrink-0"></i>
+            <div>
+              <p class="text-sm font-bold text-slate-700">부서별 전문 챗봇</p>
+              <p class="text-xs text-slate-400 mt-0.5">팀 전용 AI 챗봇으로 바로 이동합니다</p>
+            </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3" id="bot-card-grid"></div>
         </div>
       </div>
 
@@ -193,22 +210,15 @@
 
     <div id="sticky-input" class="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent z-40 hidden">
       <div class="max-w-6xl mx-auto relative group">
-        <input type="text" id="chat-search-input" onkeydown="if(event.key==='Enter') handleSearch('chat-search-input')" class="w-full bg-white border border-slate-200 rounded-2xl py-4 pl-6 pr-24 shadow-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all text-sm" placeholder="추가로 궁금한 내용을 입력하세요...">
-        <button onclick="handleSearch('chat-search-input')" class="absolute right-2 inset-y-2 bg-blue-600 text-white px-4 rounded-xl hover:bg-blue-700 transition-all"><i data-lucide="send" class="w-4 h-4"></i></button>
+        <input type="text" id="chat-search-input" onkeydown="if(event.key==='Enter') handleSearch('chat-search-input')" aria-label="추가 질문 입력" class="w-full bg-white border border-slate-200 rounded-2xl py-4 pl-6 pr-24 shadow-2xl outline-none focus:ring-2 focus:ring-[#1A56DB] transition-all text-sm placeholder:text-slate-400" placeholder="추가로 궁금한 내용을 입력하세요...">
+        <button onclick="handleSearch('chat-search-input')" aria-label="질문 전송" class="absolute right-2 inset-y-2 bg-[#1A56DB] text-white px-4 rounded-xl hover:bg-[#1343B5] transition-all"><i data-lucide="send" class="w-4 h-4"></i></button>
       </div>
     </div>
 
-    <div id="loader" class="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] hidden flex flex-col items-center justify-start pt-20 px-4 sm:px-6">
-      <div class="bg-white/95 border-2 border-blue-500 p-5 rounded-2xl max-w-md w-full shadow-2xl flex items-center gap-4 animate-bounce mt-4">
-        <div class="w-9 h-9 border-4 border-slate-100 border-t-blue-600 rounded-full animate-spin shrink-0"></div>
-        <div class="flex flex-col flex-1">
-          <span class="text-sm font-bold text-blue-600 flex items-center gap-1">
-            <i data-lucide="sparkles" class="w-4 h-4 text-blue-500 animate-pulse"></i> AI가 업무를 수행중입니다!
-          </span>
-          <span class="text-[11px] text-slate-500 font-medium mt-0.5 leading-snug">
-            AI가 명령어를 분석하여 실행하고 있습니다. 잠시만 기다려주세요!
-          </span>
-        </div>
+    <div id="loader" class="fixed bottom-[100px] left-1/2 -translate-x-1/2 z-[100] hidden pointer-events-none" role="status" aria-live="polite" aria-label="AI 답변 생성 중">
+      <div class="bg-white border border-slate-200 ai-msg-card px-5 py-3 rounded-2xl shadow-lg flex items-center gap-3 whitespace-nowrap">
+        <div class="w-4 h-4 border-2 border-slate-200 border-t-[#1A56DB] rounded-full animate-spin shrink-0"></div>
+        <span class="text-sm font-semibold text-[#1A56DB]">AI가 답변을 생성하고 있습니다…</span>
       </div>
     </div>
   </div>
@@ -226,17 +236,17 @@
       <div class="p-5 flex flex-col gap-4 bg-white">
         <p class="text-sm text-slate-600">이유를 선택해주세요!</p>
         <div class="flex flex-wrap gap-2" id="feedback-reasons">
-          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">최신 정보가 아님(업데이트필요)</button>
-          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">질문과 맞지 않은 답변</button>
-          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">내용이 부족함</button>
-          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">출처가 잘못됨</button>
-          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-lg text-xs text-slate-600 hover:border-blue-400 hover:bg-blue-50 transition-colors">기타 의(아래 작성)</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs text-slate-600 hover:border-[#1A56DB] hover:bg-[#EEF3FF] transition-colors">최신 정보가 아님(업데이트필요)</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs text-slate-600 hover:border-[#1A56DB] hover:bg-[#EEF3FF] transition-colors">질문과 맞지 않은 답변</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs text-slate-600 hover:border-[#1A56DB] hover:bg-[#EEF3FF] transition-colors">내용이 부족함</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs text-slate-600 hover:border-[#1A56DB] hover:bg-[#EEF3FF] transition-colors">출처가 잘못됨</button>
+          <button onclick="toggleReason(this)" class="px-3 py-1.5 border border-slate-200 rounded-xl text-xs text-slate-600 hover:border-[#1A56DB] hover:bg-[#EEF3FF] transition-colors">기타 의(아래 작성)</button>
         </div>
-        <textarea id="feedback-comment" rows="3" class="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 placeholder:text-slate-300 resize-none" placeholder="추가 의견을 자세히 적어주시면 시스템 개선에 큰 도움이 됩니다."></textarea>
+        <textarea id="feedback-comment" rows="3" class="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none focus:border-[#1A56DB] focus:ring-1 focus:ring-[#1A56DB] placeholder:text-slate-400 resize-none" placeholder="추가 의견을 자세히 적어주시면 시스템 개선에 큰 도움이 됩니다."></textarea>
       </div>
       <div class="p-4 bg-slate-50 flex justify-end gap-2 border-t border-slate-100">
         <button onclick="closeFeedbackModal()" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">취소</button>
-        <button onclick="submitNegativeFeedback()" class="px-4 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors">제출</button>
+        <button onclick="submitNegativeFeedback()" class="px-4 py-2 rounded-xl text-sm font-bold bg-[#1A56DB] text-white hover:bg-[#1343B5] transition-colors">제출</button>
       </div>
     </div> 
   </div>
@@ -251,7 +261,7 @@
         <div class="flex gap-4">
           <div class="flex-1">
             <label class="block text-xs font-bold text-slate-500 mb-1.5">유형</label>
-            <select id="global-feedback-type" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500 bg-slate-50">
+            <select id="global-feedback-type" class="w-full border border-slate-200 rounded-xl p-2.5 text-sm outline-none focus:border-[#1A56DB] bg-slate-50">
               <option value="버그/오류 리포트">버그/오류 리포트</option>
               <option value="기능 추가 제안" selected>기능 추가 제안</option>
               <option value="답변 품질 개선">답변 품질 개선</option>
@@ -260,7 +270,7 @@
           </div>
           <div class="flex-1">
             <label class="block text-xs font-bold text-slate-500 mb-1.5">우선순위</label>
-            <select id="global-feedback-priority" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500 bg-slate-50">
+            <select id="global-feedback-priority" class="w-full border border-slate-200 rounded-xl p-2.5 text-sm outline-none focus:border-[#1A56DB] bg-slate-50">
               <option value="긴급">긴급</option>
               <option value="높음">높음</option>
               <option value="보통" selected>보통</option>
@@ -270,16 +280,16 @@
         </div>
         <div>
           <label class="block text-xs font-bold text-slate-500 mb-1.5">제목</label>
-          <input type="text" id="global-feedback-title" class="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:border-blue-500" placeholder="제안하시려는 내용을 간단히 적어주세요.">
+          <input type="text" id="global-feedback-title" aria-label="제목" class="w-full border border-slate-200 rounded-xl p-2.5 text-sm outline-none focus:border-[#1A56DB]" placeholder="제안하시려는 내용을 간단히 적어주세요.">
         </div>
         <div>
           <label class="block text-xs font-bold text-slate-500 mb-1.5">상세 내용</label>
-          <textarea id="global-feedback-content" rows="4" class="w-full border border-slate-200 rounded-lg p-3 text-sm outline-none focus:border-blue-500 resize-none" placeholder="어떤 점이 불편하셨나요? 혹은 추가되었으면 하는 기능이나 답변 양식을 자세히 설명해주세요."></textarea>
+          <textarea id="global-feedback-content" rows="4" aria-label="상세 내용" class="w-full border border-slate-200 rounded-xl p-3 text-sm outline-none focus:border-[#1A56DB] resize-none" placeholder="어떤 점이 불편하셨나요? 혹은 추가되었으면 하는 기능이나 답변 양식을 자세히 설명해주세요."></textarea>
         </div>
       </div> 
       <div class="p-4 bg-slate-50 flex justify-end gap-2 border-t border-slate-100">
         <button onclick="closeGlobalFeedbackModal()" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors">취소</button>
-        <button id="global-feedback-submit-btn" onclick="submitGlobalFeedback()" class="px-5 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-colors flex items-center gap-2"><i data-lucide="send" class="w-4 h-4"></i> 제출하기</button>
+        <button id="global-feedback-submit-btn" onclick="submitGlobalFeedback()" class="px-5 py-2 rounded-xl text-sm font-bold bg-[#1A56DB] text-white hover:bg-[#1343B5] transition-colors flex items-center gap-2"><i data-lucide="send" class="w-4 h-4"></i> 제출하기</button>
       </div>
     </div> 
   </div>
@@ -295,15 +305,85 @@
     
     const chatView = document.getElementById('chat-view');
 
+    // localStorage 캐시로 그리팅 즉시 표시 (동기)
+    (function() {
+      const cached = localStorage.getItem('cobot_user_name');
+      if (cached && /[가-힣]/.test(cached)) {
+        document.getElementById('main-greeting').innerHTML =
+          `안녕하세요, <span class="text-blue-600">${cached}님</span>`;
+      }
+    })();
+
+    // ====================================================================
+    // 부서별 전문 챗봇 데이터 + 즐겨찾기 렌더러
+    // ====================================================================
+    const BOTS = [
+      { id: 'chongjumu', name: '총무팀 출장 규정 전문 봇', desc: '출장규정, 매뉴얼, 출장FAQ 전용 챗봇',
+        url: 'https://notebooklm.google.com/notebook/3886581b-615d-4302-95b8-33924b0a0b01',
+        icon: 'plane', iconCls: 'bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white', borderHover: 'hover:border-indigo-200' },
+      { id: 'safety', name: '안전보건 전문 봇', desc: '산업재해, 안전보건(검진,화학물질) 전용 챗봇',
+        url: 'https://script.google.com/a/macros/coway.com/s/AKfycbyg9mY0evZjZUVKWIV91Y_7R_h3qoy0-ajAjmsz-Ini7OLJIgCve5w-h5SC541rgfQdtg/exec',
+        icon: 'shield-check', iconCls: 'bg-cyan-50 text-cyan-600 group-hover:bg-cyan-600 group-hover:text-white', borderHover: 'hover:border-cyan-200' },
+      { id: 'budget', name: '예산관리팀 전용 봇', desc: '예산 Q&A, 부서운영비·야근식대 계산기',
+        url: 'https://script.google.com/a/macros/coway.com/s/AKfycbwSIpm7Bkj_iff1Td2n5TmQpe-SXCgbhT5wuH4LR6NZX2sxkMqJXwMkf5mT1k4COHoJcw/exec',
+        icon: 'calculator', iconCls: 'bg-emerald-50 text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white', borderHover: 'hover:border-emerald-200' },
+      { id: 'ax', name: 'AX 지원 포탈', desc: 'AX지원 가이드, GCP 생성 가이드, AI 보안 가이드',
+        url: 'https://ax.coway.do/guide',
+        icon: 'cpu', iconCls: 'bg-violet-50 text-violet-600 group-hover:bg-violet-600 group-hover:text-white', borderHover: 'hover:border-violet-200' },
+    ];
+
+    const BOT_FAVS_KEY = 'cobot_bot_favorites';
+
+    function getBotFavorites() {
+      try { return JSON.parse(localStorage.getItem(BOT_FAVS_KEY) || '[]'); } catch { return []; }
+    }
+
+    function toggleBotFavorite(botId, event) {
+      event.stopPropagation();
+      const favs = getBotFavorites();
+      const idx = favs.indexOf(botId);
+      if (idx >= 0) favs.splice(idx, 1); else favs.unshift(botId);
+      localStorage.setItem(BOT_FAVS_KEY, JSON.stringify(favs));
+      renderBotGrid();
+      showToast(idx >= 0 ? '🔄 즐겨찾기가 해제되었습니다.' : '⭐ 즐겨찾기에 고정되었습니다.');
+    }
+
+    function renderBotGrid() {
+      const container = document.getElementById('bot-card-grid');
+      if (!container) return;
+      const favs = getBotFavorites();
+      const sorted = [...BOTS].sort((a, b) => {
+        const aF = favs.includes(a.id) ? favs.indexOf(a.id) : 9999;
+        const bF = favs.includes(b.id) ? favs.indexOf(b.id) : 9999;
+        return aF - bF;
+      });
+      container.innerHTML = sorted.map(bot => {
+        const isFav = favs.includes(bot.id);
+        const starIcon = isFav
+          ? `<i data-lucide="star" class="w-3.5 h-3.5 fill-amber-400 text-amber-500"></i>`
+          : `<i data-lucide="star" class="w-3.5 h-3.5 text-slate-300 group-hover:text-amber-400 transition-colors"></i>`;
+        const cardBorder = isFav ? 'border-2 border-amber-200 shadow-md' : 'border border-slate-100 shadow-sm';
+        return `
+          <div onclick="window.open('${bot.url}', '_blank')" class="bg-white p-5 rounded-2xl ${cardBorder} hover:shadow-md ${bot.borderHover} cursor-pointer transition-all group relative">
+            <span class="absolute top-3 right-3 p-1 cursor-pointer hover:scale-110 transition-transform z-10" onclick="toggleBotFavorite('${bot.id}', event)">${starIcon}</span>
+            <div class="w-10 h-10 ${bot.iconCls} rounded-xl flex items-center justify-center mb-4 transition-colors"><i data-lucide="${bot.icon}" class="w-5 h-5"></i></div>
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-1.5 pr-5">${bot.name} <i data-lucide="arrow-up-right" class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"></i></h4>
+            <p class="text-xs text-slate-400 mt-1">${bot.desc}</p>
+          </div>`;
+      }).join('');
+      if (window.lucide) lucide.createIcons();
+    }
+
     const placeholderTemplates = [
       "오늘 안 읽은 메일 요약해줘",
-      "오늘 오후 2시~3시 00 회의 잡아줘",
+      "OO팀 OOO님을 내일 오후 3시~4시에 팀 업무 회의로 캘린더 초대해줘",
       "오늘 오후까지 업무 기획안 작성 할 일 등록해줘",
-      "경조금 신청 자격 조건이랑 절차 알려줘",
-      "지타워 3층 대회의실 빔프로젝터 고장 났을 때 처리 방법"
+      "본사 층별 정보 알려줘",
+      "경조 휴가 및 경조금에 대해 알려줘"
     ];
     let currentPlaceholderIdx = 0;
 
+    renderBotGrid();
     lucide.createIcons();
   </script>
 
@@ -312,19 +392,25 @@
     // [SECTION 5] Pure REST API 초고속 웹 표준 통신 레이어 (Core Fetch Engines)
     // ====================================================================
     window.onload = async function() {
-      try {
-        const response = await fetch("/api/user-info");
-        if (response.ok) {
-          currentUserProfile = await response.json();
-          document.getElementById('user-name').innerText = `접속자: ${currentUserProfile.email}`;
-        }
-      } catch (err) {
-        console.error("사내 사용자 계정 동기화 유실:", err);
-        document.getElementById('user-name').innerText = "접속자: 미인증 계정";
-      }
-      
-      await renderHistoryDashboardGrid();
-      
+      // user-info 와 history를 병렬 실행 (순차 → 합산 시간 / 병렬 → max 시간)
+      await Promise.allSettled([
+        fetch("/api/user-info")
+          .then(r => r.ok ? r.json() : Promise.reject())
+          .then(info => {
+            currentUserProfile = info;
+            document.getElementById('user-name').innerText = `접속자: ${info.email}`;
+            if (info.name && /[가-힣]/.test(info.name)) {
+              localStorage.setItem('cobot_user_name', info.name);
+              document.getElementById('main-greeting').innerHTML =
+                `안녕하세요, <span class="text-blue-600">${info.name}님</span>`;
+            }
+          })
+          .catch(() => {
+            document.getElementById('user-name').innerText = "접속자: 미인증 계정";
+          }),
+        renderHistoryDashboardGrid()
+      ]);
+
       rotatePlaceholder();
       setInterval(rotatePlaceholder, 4500);
       if (window.lucide) lucide.createIcons();
@@ -340,8 +426,7 @@
         const data = await response.json();
 
         if (data.success && data.sessions && data.sessions.length > 0) {
-          historyWrapper.classList.remove('hidden');
-          gridContainer.innerHTML = ''; 
+          gridContainer.innerHTML = '';
 
           data.sessions.slice(0, 6).forEach(session => {
             let badgeText = '💬 일반업무';
@@ -349,7 +434,7 @@
             
             if (session.badge_type === 'COST' || session.badge_type === 'BQ') {
               badgeText = '📊 데이터분석';
-              badgeClass = 'bg-blue-50 text-blue-600 border border-blue-200';
+              badgeClass = 'bg-[#EEF3FF] text-[#1A56DB] border border-[#C7D7FC]';
             } else if (session.badge_type === 'TRAVEL') {
               badgeText = '✈️ 출장정산';
               badgeClass = 'bg-emerald-50 text-emerald-600 border border-emerald-200';
@@ -362,7 +447,7 @@
               ? `<i data-lucide="star" class="w-4 h-4 fill-amber-400 text-amber-500"></i>` 
               : `<i data-lucide="star" class="w-4 h-4 text-slate-300 group-hover:text-amber-400 transition-colors"></i>`;
 
-            const cardBorderClass = session.is_pinned ? 'border-2 border-amber-200 shadow-md' : 'border border-slate-200 shadow-sm';
+            const cardBorderClass = session.is_pinned ? 'border border-amber-200 shadow-md' : 'border border-slate-200 shadow-sm';
 
             const timeObj = new Date(session.updated_at);
             const formattedTime = `${timeObj.getMonth() + 1}월 ${timeObj.getDate()}일 ${String(timeObj.getHours()).zfill(2)}:${String(timeObj.getMinutes()).zfill(2)}`;
@@ -372,9 +457,9 @@
                 <span class="absolute top-3 right-3 text-amber-500 cursor-pointer hover:scale-110 transition-transform p-1 z-10" onclick="toggleSessionBookmark('${session.session_id}', event)">
                   ${starIcon}
                 </span>
-                <span class="px-2 py-0.5 text-[10px] font-bold ${badgeClass} rounded-md">${badgeText}</span>
+                <span class="px-2 py-0.5 text-[10px] font-bold ${badgeClass} rounded-lg">${badgeText}</span>
                 <h4 class="font-bold text-slate-800 text-sm mt-2 truncate pr-6">${session.title}</h4>
-                <p class="text-[11px] text-slate-400 mt-1">업데이트: ${formattedTime}</p>
+                <p class="text-xs text-slate-400 mt-1">업데이트: ${formattedTime}</p>
               </div>`;
             
             gridContainer.insertAdjacentHTML('beforeend', cardHtml);
@@ -385,6 +470,7 @@
         }
       } catch (err) {
         console.error("히스토리 목록 스캔 무산:", err);
+        historyWrapper.classList.add('hidden');
       }
     }
 
@@ -431,16 +517,16 @@
               lastUserQuery = msg.content;
               const div = document.createElement('div');
               div.className = "flex gap-4 justify-end src-user-msg";
-              div.innerHTML = `<div class="max-w-[80%] bg-blue-600 text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${msg.content}</div>`;
+              div.innerHTML = `<div class="max-w-[80%] bg-[#1A56DB] text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${msg.content}</div>`;
               container.appendChild(div);
             } else {
               lastAIAnswer = msg.content;
               const div = document.createElement('div');
               div.className = "flex gap-4 justify-start src-ai-msg";
               div.innerHTML = `
-                <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white"></i></div>
+                <div class="w-8 h-8 rounded-lg bg-[#1A56DB] flex items-center justify-center text-white shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white"></i></div>
                 <div class="max-w-[90%] flex flex-col gap-3 flex-1">
-                  <div id="${currentMsgId}" class="bg-white border border-slate-200 p-6 rounded-2xl rounded-tl-none text-slate-800 text-[15px] shadow-sm min-h-[100px]"></div>
+                  <div id="${currentMsgId}" class="bg-white border border-slate-200 ai-msg-card p-6 rounded-2xl text-slate-800 text-sm shadow-sm min-h-[100px]"></div>
                 </div>`;
               container.appendChild(div);
               
@@ -577,9 +663,9 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(requestPayload)
         });
-        
+
         if (!response.ok) throw new Error(`HTTP 에러 발생 (코드 ${response.status})`);
-        
+
         const data = await response.json();
 
         // ====================================================================
@@ -637,14 +723,14 @@
       div.className = `flex gap-4 fade-in ${role === 'user' ? 'justify-end' : 'justify-start'}`;
       
       if (role === 'user') {
-        div.innerHTML = `<div class="max-w-[80%] bg-blue-600 text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${text}</div>`;
+        div.innerHTML = `<div class="max-w-[80%] bg-[#1A56DB] text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${text}</div>`;
       } else {
         div.innerHTML = `
-          <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0">
+          <div class="w-8 h-8 rounded-lg bg-[#1A56DB] flex items-center justify-center text-white shrink-0">
             <i data-lucide="zap" class="w-5 h-5 text-white"></i>
           </div>
           <div class="max-w-[90%] flex flex-col gap-3 flex-1 min-w-0 overflow-hidden">
-            <div id="${msgId}" class="bg-white border border-slate-200 p-6 rounded-2xl rounded-tl-none text-slate-800 text-[15px] shadow-sm min-h-[100px] overflow-x-hidden">
+            <div id="${msgId}" class="bg-white border border-slate-200 ai-msg-card p-6 rounded-2xl text-slate-800 text-sm shadow-sm min-h-[100px] overflow-x-hidden">
               <div class="animate-pulse flex space-y-4 flex-col">
                 <div class="h-4 bg-slate-200 rounded w-3/4"></div>
                 <div class="h-4 bg-slate-200 rounded"></div>
@@ -806,7 +892,17 @@
       // 혹시 모를 잔여 컨텍스트 찌꺼기 최종 완벽 세정
       cleanText = cleanText.replace(/\[SOURCE_REPORTS\][\s\S]*?$/gi, "").replace(/\[CHART_DATA\][\s\S]*?$/gi, "");
 
-      marked.use({ breaks: true, gfm: true });
+      // 이메일 주소를 marked GFM 자동링크 대상에서 제외 — <a href="mailto:"> 변환 방지
+      marked.use({
+        breaks: true,
+        gfm: true,
+        renderer: {
+          link({ href, title, text }) {
+            if (href && href.startsWith('mailto:')) return text; // 이메일은 평문 유지
+            return false; // 그 외 링크는 기본 렌더러 사용
+          }
+        }
+      });
       let parsedHTML = marked.parse(cleanText);
 
       // 모든 본문 내 마크다운 링크 <a> 태그에 target="_blank" 무조건 자율 주입
@@ -814,12 +910,13 @@
 
       parsedHTML = parsedHTML.replace(/\[(\d+(?:,\s*\d+)*)\]/g, (match, nums) => {
         const numArr = nums.split(',').map(n => n.trim());
-        return numArr.map(n => 
+        return numArr.map(n =>
           `<span class="citation-chip" onclick="scrollToDoc('${msgId}', ${n})">${n}</span>`
         ).join(' ');
       });
 
-      const highlightRegex = /(\d+(?:,\d{3})*(?:만원|원)|1박당|최대 \d+박|\d+km|\d+시간(?:\s*\d+분)?|\d+분|T\.\d{2,4}-\d{3,4}-\d{4}|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
+      // 이메일 패턴은 highlightRegex에서 제외 (이미 HTML 링크로 변환된 상태에서 재처리 시 HTML 구조 파괴 방지)
+      const highlightRegex = /(\d+(?:,\d{3})*(?:만원|원)|1박당|최대 \d+박|\d+km|\d+시간(?:\s*\d+분)?|\d+분|T\.\d{2,4}-\d{3,4}-\d{4})/g;
       parsedHTML = parsedHTML.replace(highlightRegex, '<span class="highlight-text">$1</span>');
       return `<div class="summary-content prose-slate max-w-none">${parsedHTML}</div>`;
     }
@@ -928,10 +1025,10 @@
         normalizedSources.forEach((item, index) => {
           const idx = index + 1;
           cardsHtml += `
-            <div id="doc-card-${msgId}-${idx}" class="p-4 bg-white border border-blue-100 shadow-sm rounded-xl transition-all hover:border-blue-500 hover:shadow-md">
+            <div id="doc-card-${msgId}-${idx}" class="p-4 bg-[#F5F8FF] border border-[#C7D7FC] shadow-sm rounded-xl transition-all hover:border-[#1A56DB] hover:shadow-md">
               <div class="flex justify-between items-start mb-1.5">
-                <span class="text-[10px] font-bold text-blue-600 uppercase">✅ 주요 출처 #${idx}</span>
-                <a href="${item.link}" target="_blank" class="text-blue-500 hover:text-blue-700 flex items-center gap-1 text-xs font-bold transition-colors">
+                <span class="text-[10px] font-bold text-[#1A56DB] uppercase">✅ 주요 출처 #${idx}</span>
+                <a href="${item.link}" target="_blank" class="text-[#1A56DB] hover:text-[#1343B5] flex items-center gap-1 text-xs font-bold transition-colors">
                   문서 열기 <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
                 </a>
               </div>
@@ -970,7 +1067,7 @@
       if (suggestions.length > 0) {
         const sugBtns = suggestions.map(sug => {
           const safeSug = sug.replace(/'/g, "\\'");
-          return `<button onclick="quickSearch('${safeSug}')" class="text-[13px] font-bold text-blue-600 bg-white px-4 py-2 rounded-full border border-blue-200 hover:bg-blue-50 hover:border-blue-400 transition-all shadow-sm flex items-center gap-1.5"><i data-lucide="sparkles" class="w-3.5 h-3.5 text-blue-500"></i> ${sug}</button>`;
+          return `<button onclick="quickSearch('${safeSug}')" class="text-[13px] font-bold text-[#1A56DB] bg-white px-4 py-2 rounded-full border border-[#1A56DB]/30 hover:bg-[#EEF3FF] hover:border-[#1A56DB] transition-all shadow-sm flex items-center gap-1.5"><i data-lucide="sparkles" class="w-3.5 h-3.5 text-[#1A56DB]"></i> ${sug}</button>`;
         }).join('');
         suggestionsHtml = `<div class="mt-6 flex flex-wrap gap-2">${sugBtns}</div>`;
       }
@@ -978,18 +1075,18 @@
       let actionButtonsHtml = `
         <div class="flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 pt-3 mt-4">
           <div class="flex items-center gap-1 sm:gap-2">
-            <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors" title="답변 복사" onclick="copyToClipboard('${msgId}')">
+            <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors" title="답변 복사" onclick="copyToClipboard('${msgId}')">
               <i data-lucide="copy" class="w-4 h-4"></i> <span class="hidden sm:inline">복사</span>
             </button>
-            <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors" title="다른 답변 생성" onclick="regenerateAnswer('${safeQuery}')">
+            <button class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors" title="다른 답변 생성" onclick="regenerateAnswer('${safeQuery}')">
               <i data-lucide="refresh-ccw" class="w-4 h-4"></i> <span class="hidden sm:inline">재생성</span>
             </button>
           </div>
-          <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
-            <button class="p-1.5 rounded-md text-slate-400 hover:text-blue-600 hover:bg-white shadow-sm transition-all" title="좋은 답변입니다" onclick="submitPositiveFeedback('${safeQuery}')">
+          <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+            <button class="p-1.5 rounded-lg text-slate-400 hover:text-[#1A56DB] hover:bg-white shadow-sm transition-all" title="좋은 답변입니다" onclick="submitPositiveFeedback('${safeQuery}')">
               <i data-lucide="thumbs-up" class="w-4 h-4"></i>
             </button>
-            <button class="p-1.5 rounded-md text-slate-400 hover:text-red-600 hover:bg-white shadow-sm transition-all" title="아쉬운 답변입니다" onclick="openFeedbackModal('${safeQuery}')">
+            <button class="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-white shadow-sm transition-all" title="아쉬운 답변입니다" onclick="openFeedbackModal('${safeQuery}')">
               <i data-lucide="thumbs-down" class="w-4 h-4"></i>
             </button>
           </div>
@@ -1026,9 +1123,9 @@
       }
 
       aiContentDiv.innerHTML = `
-        <div class="flex items-center gap-2 text-blue-600 font-bold mb-4">
-          <i data-lucide="check-circle" class="w-4 h-4 text-blue-600 font-bold"></i>
-          <span class="text-base tracking-tight">스마트 검색 결과</span>
+        <div class="inline-flex items-center gap-1.5 bg-[#EEF3FF] text-[#1A56DB] text-xs font-bold px-3 py-1.5 rounded-full mb-4">
+          <i data-lucide="check-circle" class="w-3.5 h-3.5"></i>
+          스마트 검색 결과
         </div>
         ${htmlContent}
         ${dynamicChartCanvasHtml}
@@ -1182,7 +1279,7 @@
       
       const buttons = document.getElementById('feedback-reasons').querySelectorAll('button');
       buttons.forEach(btn => {
-        btn.classList.remove('bg-blue-50', 'border-blue-400', 'text-blue-700', 'font-bold');
+        btn.classList.remove('bg-[#EEF3FF]', 'border-[#1A56DB]', 'text-[#1A56DB]', 'font-bold');
       });
       document.getElementById('feedback-modal').classList.remove('hidden');
     }
@@ -1195,10 +1292,10 @@
       const reason = btn.innerText;
       if (selectedReasons.has(reason)) {
         selectedReasons.delete(reason);
-        btn.classList.remove('bg-blue-50', 'border-blue-400', 'text-blue-700', 'font-bold');
+        btn.classList.remove('bg-[#EEF3FF]', 'border-[#1A56DB]', 'text-[#1A56DB]', 'font-bold');
       } else {
         selectedReasons.add(reason);
-        btn.classList.add('bg-blue-50', 'border-blue-400', 'text-blue-700', 'font-bold');
+        btn.classList.add('bg-[#EEF3FF]', 'border-[#1A56DB]', 'text-[#1A56DB]', 'font-bold');
       }
     }
 

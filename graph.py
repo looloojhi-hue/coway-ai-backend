@@ -5,7 +5,7 @@ import operator
 import json
 import base64
 import datetime
-import re 
+import re
 from pydantic import BaseModel, Field
 import google.auth
 import google.auth.transport.requests
@@ -259,24 +259,6 @@ def supervisor_node(state: AgentState):
                 "sources": []
             }
 
-    # Pre-check 2: 드라이브 확인 응답 사전 감지
-    confirmed_query = _get_drive_confirmed_query(state)
-    if confirmed_query:
-        next_intent = "DRIVE_LIST" if any(kw in confirmed_query for kw in _DRIVE_LIST_KEYWORDS) else "DRIVE_SEARCH"
-        print(f"✅ [Supervisor] 드라이브 검색 확인 응답 감지 → {next_intent} 직행")
-        return {
-            "current_intent": next_intent,
-            "top_intent": next_intent,
-            "pending_intents": [],
-            "bq_retry_count": 0,
-            "bq_error_log": "",
-            "last_failed_intent": "",
-            "last_error_type": "",
-            "fallback_suggested": False,
-            "awaiting_fallback_query": "",
-            "sources": []
-        }
-
     prompt = f"""
     당신은 코웨이 전사 AI 챗봇의 총괄 지휘자입니다.
     사용자 질문을 분석하여 수행해야 할 모든 작업을 intents 목록에 순서대로 담아 반환하세요.
@@ -333,7 +315,9 @@ def supervisor_node(state: AgentState):
     6. "보내줘", "발송해줘" + 수신자 명확 → EMAIL_SEND / 수신자 불명확하거나 검토 후 보내고 싶다면 → EMAIL_WRITE
     7. "회신", "답장", "답변 메일" → EMAIL_REPLY / "메일 찾아줘", "메일 검색" → EMAIL_SEARCH
     8. "할일 완료", "완료로 표시", "삭제해줘(할일)", "할일 수정" → TASK_ACTION
-    9. "이름 + 연락처/이메일/부서/직책/전화번호 찾아줘" → PEOPLE_SEARCH / "이름 + 캘린더 초대" 요청 시 → [PEOPLE_SEARCH, CALENDAR_WRITE] 또는 CALENDAR_WRITE 단독 (이름 포함)
+    9. "이름 + 연락처/이메일/부서/직책/전화번호 찾아줘" → PEOPLE_SEARCH
+       "이름 + 캘린더 초대" 요청 시 (일정 제목·날짜·시간 미포함) → PEOPLE_SEARCH 단독. 대상자 확인 후 사용자가 일정 상세를 입력하면 그때 CALENDAR_WRITE 실행.
+       "이름 + 일정 제목 + 날짜 + 시간" 모두 명시된 경우에만 → CALENDAR_WRITE 직접 (예: "김영훈님과 내일 오후 3시 팀미팅 잡아줘")
     10. [🔒 드라이브 격리 원칙 — 절대 준수]
        DRIVE_SEARCH / DRIVE_LIST는 질문에 "드라이브", "내 드라이브", "공유 드라이브", "내 파일", "내 문서함" 중
        하나 이상이 명시적으로 포함된 경우에만 사용하세요.
@@ -360,6 +344,8 @@ def supervisor_node(state: AgentState):
     - "시트에 데이터 추가해줘" → ["SHEET_WRITE"]
     - "구글 Docs 보고서 만들어줘" → ["DOCS_CREATE"]
     - "내일 오후 3시 화상회의 일정 잡아줘" → ["CALENDAR_WRITE"]  ← 온라인 미팅도 CALENDAR_WRITE
+    - "김영훈님 캘린더 초대해줘" → ["PEOPLE_SEARCH"]  ← 일정 상세 없음, 대상자 확인 먼저
+    - "김영훈님과 내일 오후 3시 인더남 회의 잡아줘" → ["CALENDAR_WRITE"]  ← 이름+제목+날짜+시간 모두 있으면 직접
 
     [confidence 산출 기준]
     - 0.9 이상: 키워드가 명확하고 인텐트가 분명한 경우
@@ -512,12 +498,15 @@ def rag_retriever_node(state: AgentState):
 
 def rag_search_node(state: AgentState):
     print("\n🔍 [RAG Search] 빅쿼리 고성능 하이브리드 검색 및 권한(ACL) 실시간 검증 가동...")
-    from rag_node import hybrid_search_bq
+    from rag_node import hybrid_search_bq, is_broad_query
 
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "employee_all@coway.com")
-    
-    context_text, top_dept_code = hybrid_search_bq(user_input, user_email)
+
+    # 광범위 질문("알려줘", "정리해줘" 등)은 더 많은 문서를 검색해 누락 방지
+    top_k = 8 if is_broad_query(user_input) else 5
+    print(f"📊 [RAG] 쿼리 유형: {'광범위' if top_k == 8 else '핀포인트'} → top_k={top_k}")
+    context_text, top_dept_code = hybrid_search_bq(user_input, user_email, top_k=top_k)
     
     if not context_text:
         context_text = "시스템에 등록된 사내 규정이나 관련 문서를 찾을 수 없거나, 해당 문서를 열람할 권한이 없습니다."
@@ -550,48 +539,51 @@ def reasoner_node(state: AgentState):
         docs = "\n\n---\n\n".join(url_to_block[u] for u in url_order)
         print(f"🔗 [Reasoner] 청크 병합: {len(raw_blocks)}개 → {len(url_order)}개 고유 문서")
 
-    # 프롬프트용: 문서에 명시적 번호 부여 → LLM이 총 문서 수와 각 번호를 정확히 인지
-    doc_blocks_list = re.split(r'\n\n---\n\n', docs) if docs else []
-    num_docs = len(doc_blocks_list)
-    if num_docs > 0:
-        numbered_docs = "\n\n---\n\n".join(
-            f"[문서 {i}]\n{block.strip()}"
-            for i, block in enumerate(doc_blocks_list, 1)
-        )
-    else:
-        numbered_docs = docs or ""
-
+    # ──────────────────────────────────────────────────────────────────────
+    # 소스카드 기반 선 추출 → 번호 부여는 그 이후에만
+    # (인용번호와 소스카드 수 불일치 버그의 근본 원인 수정:
+    #  기존 코드는 num_docs를 전체 블록 수로 먼저 설정한 뒤 소스카드를 나중에 빌드해서
+    #  num_docs > len(extracted_sources) 인 상태로 LLM에 전달 → [5][6][7] 유효 통과 → 소스카드 없음)
+    # ──────────────────────────────────────────────────────────────────────
     extracted_sources = []
-    if docs:
-        # ① BQ hybrid search 포맷 (rag_node.py): 문서 블록을 --- 구분자로 분리 후 각 블록에서 추출
-        # [문서명]: xxx / [문서URL]: url 형태이며, 라인 시작 기준으로 안전하게 파싱
-        doc_blocks = re.split(r'\n\n---\n\n', docs)
-        for block in doc_blocks:
-            name_m = re.search(r'^\[문서명\]:\s*(.+)', block, re.MULTILINE)
-            url_m  = re.search(r'^\[문서URL\]:\s*(https?://\S+)', block, re.MULTILINE)
-            if name_m and url_m:
-                n, u = name_m.group(1).strip(), url_m.group(1).strip()
-                if u not in [s.get('doc_url') for s in extracted_sources]:
-                    extracted_sources.append({"doc_name": n, "doc_url": u, "links": ""})
+    valid_blocks = []   # URL이 유효한 블록만 = 실제 소스카드로 표시될 블록
 
-        # ② Vertex AI search 포맷: [문서 N 원본링크: url]
+    for block in (re.split(r'\n\n---\n\n', docs) if docs else []):
+        name_m = re.search(r'^\[문서명\]:\s*(.+)', block, re.MULTILINE)
+        url_m  = re.search(r'^\[문서URL\]:\s*(https?://\S+)', block, re.MULTILINE)
+        if name_m and url_m:
+            n, u = name_m.group(1).strip(), url_m.group(1).strip()
+            if u not in [s.get('doc_url') for s in extracted_sources]:
+                extracted_sources.append({"doc_name": n, "doc_url": u, "links": ""})
+                valid_blocks.append(block)
+            # 같은 URL 중복: 소스카드 하나이므로 valid_blocks에도 추가하지 않음
+        # URL 없는 블록: LLM 번호 부여 목록에서 제외 → 인용번호 생성 불가
+
+    # Vertex AI / 레거시 마크다운 / fallback 포맷 보조 처리 (BQ 포맷 외 경로 대응)
+    if docs and not extracted_sources:
         for url in re.findall(r'원본링크:\s*(https?://[^\s\]\n]+)', docs):
             if url not in [s.get('doc_url') for s in extracted_sources]:
                 extracted_sources.append({"doc_name": "사내 규정 지식 파일", "doc_url": url.strip(), "links": ""})
-
-        # ③ 마크다운 [name](url) 포맷 (레거시)
         for name, url in re.findall(r'\[((?:\[[^\]]*\]|[^\]\n])+)\]\((https?://[^\s)]+)\)', docs):
             if url not in [s.get('doc_url') for s in extracted_sources]:
                 clean_name = name.replace("원본링크:", "").replace("출처:", "").strip()
                 extracted_sources.append({"doc_name": clean_name, "doc_url": url.strip(), "links": ""})
-
-        # ④ 최후 fallback: URL만 있는 경우
         if not extracted_sources:
             for idx, url in enumerate(re.findall(r'(https?://[^\s\n\)]+)', docs)):
                 if url not in [s.get('doc_url') for s in extracted_sources]:
                     extracted_sources.append({"doc_name": f"참고 사규 지침서 {idx+1}", "doc_url": url.strip(), "links": ""})
 
-    print(f"📎 [Reasoner] 추출된 출처 {len(extracted_sources)}개: {[s['doc_name'] for s in extracted_sources]}")
+    # 번호 부여: 소스카드와 1:1 대응하는 블록만 → num_docs = 소스카드 수와 정확히 일치
+    num_docs = len(valid_blocks) if valid_blocks else len(extracted_sources)
+    if valid_blocks:
+        numbered_docs = "\n\n---\n\n".join(
+            f"[문서 {i}]\n{block.strip()}"
+            for i, block in enumerate(valid_blocks, 1)
+        )
+    else:
+        numbered_docs = docs or ""
+
+    print(f"📎 [Reasoner] 추출된 출처 {len(extracted_sources)}개 / LLM 제공 문서 {num_docs}개: {[s['doc_name'] for s in extracted_sources]}")
 
     print("🛡️ [Model Armor] 프롬프트 인젝션 및 탈옥(Jailbreak) 실시간 스캔 중...")
     headers = get_model_armor_headers()
@@ -632,6 +624,7 @@ def reasoner_node(state: AgentState):
     - 아래 검색된 규정 문서는 총 {num_docs}개입니다. 각 문서는 [문서 1], [문서 2], ... 로 표시됩니다.
     - 문서 내용을 인용할 때 반드시 해당 번호만 문장 끝에 표기하세요. (예: [1], [2])
     - ⚠️ 절대 준수: 문서가 {num_docs}개이므로 [1]~[{num_docs}] 번호만 사용 가능합니다. [{num_docs + 1}] 이상은 존재하지 않으므로 절대 사용하지 마세요.
+    - 🚫 혼동 금지: 문서 내부의 항목 번호(예: "5. 부당 수령 주의사항", "6. 시차출퇴근제", "7. 출산휴가" 같은 FAQ 목차 번호)는 문서 인용번호가 아닙니다. 오직 [문서 N]으로 표시된 N만 인용번호로 사용하세요.
     - 문서 내의 여러 항목이 동일한 문서에서 왔더라도 번호를 나눠 쓰지 마세요. 동일 문서라면 항상 같은 번호를 사용하세요.
     - 절대로 사용자 화면에 "주요 출처", "참조 문서" 같은 텍스트 리스트를 직접 출력하지 마십시오. (하단 카드로 자동 표시됩니다.)
     - 답변 맨 마지막 줄(|||SUGGESTIONS||| 바로 위)에 아래 포맷으로 출처 JSON을 사출하세요. 이때 검색에서 제공된 모든 문서를 빠짐없이 포함하세요 — 임의로 걸러내지 마세요.
@@ -1397,6 +1390,20 @@ def calendar_write_node(state: AgentState):
         print(f"⚠️ [CALENDAR_WRITE] 비생성 요청 감지 → 명확화 유도")
         return {"messages": [AIMessage(content="📅 죄송합니다. 말씀하신 내용은 새 일정 추가가 아닌 것 같습니다.\n\n저는 현재 다음 캘린더 작업을 지원합니다:\n- **일정 등록/추가**: \"내일 오후 3시 팀 미팅 일정 잡아줘\"\n- **휴가·연차 등록**: \"6월 20일~22일 연차 등록해줘\"\n- **반차 등록**: \"오늘 오후 반차 추가해줘\"\n- **일정 조회**: \"이번 주 일정 알려줘\"\n- **초대 참석 처리**: \"참석 안 한 일정들 수락해줘\"\n\n원하시는 작업을 구체적으로 말씀해 주세요!")]}
 
+    # 시간 미지정 가드: 종일 이벤트가 아닌 미팅/회의인데 시간 정보가 없으면 먼저 문의
+    ALLDAY_SAFE_KEYWORDS = ["연차", "휴가", "재택", "외근", "공휴일", "반차", "종일", "워크샵", "하루"]
+    has_time_info = bool(re.search(r'\d+시|\d+분|오전|오후|아침|저녁|점심|새벽', user_input))
+    is_allday_safe = any(kw in user_input for kw in ALLDAY_SAFE_KEYWORDS)
+    if not has_time_info and not is_allday_safe:
+        print(f"⚠️ [CALENDAR_WRITE] 시간 정보 없음 → 날짜/시간 문의")
+        return {"messages": [AIMessage(content=(
+            "📅 일정을 잡겠습니다!\n\n"
+            "**날짜와 시간**을 알려주세요.\n\n"
+            "- 몇 월 며칠인지\n"
+            "- 시작 시간과 종료 시간 (또는 '1시간' 등 소요 시간)\n\n"
+            "예: '내일 오후 3시~5시' 또는 '6월 20일 오전 10시부터 1시간'"
+        ))]}
+
     now = datetime.datetime.now()
     today_str = f"{now.year}년 {now.month}월 {now.day}일"
 
@@ -1526,7 +1533,9 @@ def calendar_write_node(state: AgentState):
 
         attendee_line = ""
         if attendee_emails:
-            attendee_line = f"\n- **초대된 참석자:** {', '.join(attendee_emails)} (초대 메일 자동 발송)"
+            # 화면에는 원본 이름(data.attendees)을 표시 — 이메일 주소 직접 노출 방지
+            attendee_display = data.attendees if data.attendees else ', '.join(attendee_emails)
+            attendee_line = f"\n- **초대된 참석자:** {attendee_display} (초대 메일 자동 발송)"
         meet_line = ""
         if getattr(data, 'isOnline', False):
             meet_url = created_event.get('conferenceData', {}).get('entryPoints', [{}])[0].get('uri', '')
@@ -2112,39 +2121,65 @@ def people_search_node(state: AgentState):
                 "다른 이름이나 부서명으로 다시 검색해 주세요."
             ))]}
 
-        lines = []
-        first_name, first_email = "", ""
-        for i, p in enumerate(people_list):
+        # 캘린더 초대 요청 여부 감지
+        INVITE_KEYWORDS = ["캘린더 초대", "일정 초대", "초대해", "초대 해", "초대하고"]
+        is_invite_context = any(kw in user_input for kw in INVITE_KEYWORDS)
+
+        # 공통: 이름[부서] 목록 구성 — displayName에 이미 부서가 포함된 경우 중복 방지
+        parsed = []
+        for p in people_list:
             name = p.get('names', [{}])[0].get('displayName', '이름없음') if p.get('names') else '이름없음'
             email_val = p.get('emailAddresses', [{}])[0].get('value', '') if p.get('emailAddresses') else ''
             org = p.get('organizations', [{}])[0] if p.get('organizations') else {}
             dept = org.get('department', '')
-            title = org.get('title', '')
-            phone_list = p.get('phoneNumbers', [])
-            phone = phone_list[0].get('value', '') if phone_list else ''
+            parsed.append({'name': name, 'email': email_val, 'dept': dept})
 
-            if i == 0:
-                first_name, first_email = name, email_val
-
-            parts = []
-            if dept: parts.append(f"부서: {dept}")
-            if title: parts.append(f"직책: {title}")
-            if phone: parts.append(f"연락처: {phone}")
-            if email_val: parts.append(f"이메일: `{email_val}`")
-            info_str = " | ".join(parts) if parts else "상세 정보 없음"
-            lines.append(f"**{name}** — {info_str}")
-
+        lines = []
+        for i, p in enumerate(parsed):
+            # displayName에 이미 부서가 포함된 경우(예: "김영훈[코스트관리팀/...]") 중복 추가 방지
+            if p['dept'] and p['dept'] not in p['name']:
+                dept_tag = f" [{p['dept']}]"
+            else:
+                dept_tag = ""
+            lines.append(f"**{p['name']}**{dept_tag}")
         result_text = "\n".join(f"{i+1}. {line}" for i, line in enumerate(lines))
 
-        invite_hint = ""
-        if first_email:
-            invite_hint = (
-                f"\n\n💡 **캘린더 초대**: \"{first_name}님과 [일정 제목] 미팅 일정 잡아줘\"라고 말씀하시면 "
-                f"자동으로 초대 메일이 발송됩니다."
-            )
+        # ── 캘린더 초대 컨텍스트 ──────────────────────────────
+        if is_invite_context:
+            first = parsed[0]
+            # 예시용 순수 한글 이름 추출 (괄호 이전 부분)
+            clean_name = first['name'].split('[')[0].strip()
+            # 부서 표시: displayName에 없는 경우만 별도 표기
+            if first['dept'] and first['dept'] not in first['name']:
+                person_display = f"**{clean_name}** [{first['dept']}]"
+            else:
+                person_display = f"**{first['name']}**"
 
+            if len(parsed) == 1:
+                # 단독 매칭: 본인 확인 + 일정 상세 한 번에 요청
+                return {"messages": [AIMessage(content=(
+                    f"👥 {person_display} 님이 맞으신가요?\n\n"
+                    f"맞으시면, 아래 내용을 알려주세요:\n\n"
+                    f"- **일정 제목**: (예: 팀미팅, 업무협의)\n"
+                    f"- **날짜**: (예: 내일, 6월 20일)\n"
+                    f"- **시작~종료 시간**: (예: 오후 3시~4시)\n\n"
+                    f"작성 예시: \"{clean_name}님과 내일 오후 3시~4시 팀미팅 잡아줘\""
+                ))]}
+            else:
+                # 복수 매칭: 결과 목록 + 이름/부서/일정 상세 모두 한 번에 요청
+                return {"messages": [AIMessage(content=(
+                    f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
+                    f"아래 내용을 모두 알려주시면 바로 캘린더를 생성해서 초대해드리겠습니다.\n\n"
+                    f"- **부서명 + 이름**: (위 목록에서 해당하는 분의 부서명과 이름)\n"
+                    f"- **일정 제목**: (예: 팀미팅, 업무협의)\n"
+                    f"- **날짜**: (예: 내일, 6월 20일)\n"
+                    f"- **시작~종료 시간**: (예: 오후 3시~4시)\n\n"
+                    f"작성 예시: \"OO팀 {data.query}님과 내일 오후 3시~4시 업무 미팅 잡아줘\""
+                ))]}
+
+        # ── 일반 임직원 조회 컨텍스트 (이름[부서]만 표시) ──────
         return {"messages": [AIMessage(content=(
-            f"👥 **임직원 검색 결과** ({len(people_list)}건)\n\n{result_text}{invite_hint}"
+            f"👥 **임직원 검색 결과** ({len(people_list)}건)\n\n{result_text}"
         ))]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
@@ -2377,7 +2412,6 @@ _DOCS_DISCLAIMER = "\n\n---\n> 📄 **개인 드라이브 Docs 출처 — 사내
 _SHEET_TRIGGER_KEYWORDS = ["스프레드시트", "구글 시트", "google sheets", "시트 파일", "엑셀 파일"]
 _DOCS_TRIGGER_KEYWORDS = ["구글 docs", "google docs", "docs 문서", "docs로", "구글독스"]
 _SHEET_WRITE_CONFIRM_MARKER = "스프레드시트에 다음 데이터를 추가할까요"
-_DRIVE_CONFIRM_MARKER = "개인 구글 드라이브에서 검색을 진행할까요"
 _DRIVE_CONFIRM_KEYWORDS = [
     "네", "응", "맞아", "맞습니다", "맞아요", "진행", "해줘", "해주세요",
     "확인", "예", "yes", "ok", "ㅇㅇ", "그래", "그렇습니다"
@@ -2402,39 +2436,12 @@ def _get_sheet_write_confirmed(state: AgentState) -> dict:
     return {}
 
 
-def _get_drive_confirmed_query(state: AgentState) -> str:
-    """
-    이전 AI 메시지에 드라이브 확인 질문이 있고 현재 사용자 응답이 짧은 긍정이면
-    원본 드라이브 요청 텍스트 반환. 그 외엔 빈 문자열.
-    """
-    user_input = get_last_human_input(state)
-    is_affirm = (
-        any(kw in user_input for kw in _DRIVE_CONFIRM_KEYWORDS)
-        and len(user_input.strip()) < 30
-    )
-    if not is_affirm:
-        return ""
-
-    msgs = list(state["messages"])
-    # 현재 HumanMessage 제외하고 역방향으로 가장 최근 AI 메시지만 확인
-    for i in range(len(msgs) - 2, -1, -1):
-        msg = msgs[i]
-        if hasattr(msg, 'type') and msg.type == "ai":
-            if _DRIVE_CONFIRM_MARKER in msg.content:
-                # 확인 질문 이전의 Human 메시지(원본 드라이브 요청) 탐색
-                for j in range(i - 1, -1, -1):
-                    if hasattr(msgs[j], 'type') and msgs[j].type == "human":
-                        return msgs[j].content
-            break  # 가장 최근 AI 메시지만 확인
-    return ""
-
-
 def drive_search_node(state: AgentState):
     print("📁 [DRIVE_SEARCH] Google Drive 파일 검색 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
-    # 드라이브 명시 키워드 없으면 RAG 안내로 즉시 반환 (오분류 방어)
+    # 드라이브 명시 키워드 없으면 RAG 안내로 즉시 반환 (Supervisor 오분류 방어)
     if not any(kw in user_input for kw in DRIVE_TRIGGER_KEYWORDS):
         print("⚠️ [DRIVE_SEARCH] 드라이브 키워드 미감지 → RAG 안내 반환")
         return {"messages": [AIMessage(content=(
@@ -2445,24 +2452,33 @@ def drive_search_node(state: AgentState):
             "예: \"**내 드라이브**에서 결산 보고서 찾아줘\", \"**공유 드라이브**에서 기안서 검색해줘\""
         ))]}
 
-    # 드라이브 키워드 있음 → 사용자 확인 먼저 요청 (이전 확인 응답이 없는 경우)
-    confirmed_query = _get_drive_confirmed_query(state)
-    actual_query = confirmed_query if confirmed_query else user_input
-    if not confirmed_query:
-        print("❓ [DRIVE_SEARCH] 드라이브 키워드 감지 → 확인 질문 반환")
-        return {"messages": [AIMessage(content=(
-            f"📂 챗봇DB(공식 지식베이스)가 아닌 **{_DRIVE_CONFIRM_MARKER}**?\n\n"
-            f"> 💡 공식 사내 규정이 필요하시면 \"출장 규정 알려줘\" 형태로 질문해 주세요.\n\n"
-            f"드라이브 검색을 진행하시려면 **\"네\"** 또는 **\"진행해줘\"**라고 답해주세요."
-        ))]}
+    # 검색 범위 감지: user_input 기준 (LLM보다 키워드 직접 판단이 정확)
+    SHARED_KEYWORDS = ["공유 드라이브", "공유드라이브", "공유받은", "shared drive"]
+    MINE_KEYWORDS = ["내 드라이브", "내드라이브", "내 구글 드라이브", "내 파일", "내 문서함"]
+    if any(kw in user_input for kw in SHARED_KEYWORDS):
+        scope = "shared"
+    elif any(kw in user_input for kw in MINE_KEYWORDS):
+        scope = "mine"
+    else:
+        scope = "all"
 
-    print(f"✅ [DRIVE_SEARCH] 사용자 확인 완료 → 검색 진행 (원본 요청: {actual_query[:40]}...)")
+    scope_label = "내 드라이브" if scope == "mine" else "공유 드라이브" if scope == "shared" else "전체 드라이브"
+    print(f"✅ [DRIVE_SEARCH] 범위={scope_label} → 병렬 검색 진행")
+
     search_prompt = f"""
-사용자 요청: {actual_query}
-구글 드라이브에서 검색할 파일명 키워드(query), 최대 결과 수(max_results, 기본 10),
-파일 유형(file_type: doc/sheet/slide/pdf/folder/all 중 하나)을 추출하세요.
+사용자 요청: {user_input}
+구글 드라이브에서 검색할 핵심 키워드(query)와 파일 유형(file_type: doc/sheet/slide/pdf/folder/any 중 하나)을 추출하세요.
+
+query 추출 규칙:
+- 반드시 핵심 단어 1~2개만 추출 (조사·형용사·"관련"·"문서" 등 불필요한 단어 제외)
+- 예: "출장 관련 보고서 찾아줘" → query = "출장"
+- 예: "경비 정산 파일 검색해줘" → query = "경비 정산"
+- 예: "2024 예산 계획서" → query = "예산 계획서"
+max_results는 항상 10으로 설정하세요.
 """
     try:
+        import concurrent.futures
+
         response = ai_client.models.generate_content(
             model=MODEL_NAME,
             contents=search_prompt,
@@ -2472,7 +2488,7 @@ def drive_search_node(state: AgentState):
             ),
         )
         data = DriveSearchSchema(**json.loads(response.text))
-        drive = get_workspace_service('drive', 'v3', user_email)
+        drive_svc = get_workspace_service('drive', 'v3', user_email)
 
         mime_map = {
             'doc': 'application/vnd.google-apps.document',
@@ -2481,24 +2497,63 @@ def drive_search_node(state: AgentState):
             'pdf': 'application/pdf',
             'folder': 'application/vnd.google-apps.folder',
         }
-        q_parts = []
-        if data.query:
-            q_parts.append(f"name contains '{data.query}'")
-        if data.file_type and data.file_type != 'all' and data.file_type in mime_map:
-            q_parts.append(f"mimeType = '{mime_map[data.file_type]}'")
-        q_parts.append("trashed = false")
-        q_str = " and ".join(q_parts)
 
-        results = drive.files().list(
-            q=q_str,
-            pageSize=min(data.max_results, 20),
-            fields="files(id, name, mimeType, modifiedTime, owners, webViewLink)",
-            orderBy="modifiedTime desc"
-        ).execute()
-        files = results.get('files', [])
+        # 파일 유형 필터
+        mime_filter = ""
+        if data.file_type and data.file_type not in ('any', 'all') and data.file_type in mime_map:
+            mime_filter = f" and mimeType = '{mime_map[data.file_type]}'"
+
+        # 범위별 소유권 필터
+        # ※ scope="shared"는 sharedWithMe 미사용 — Team Drive 파일은 해당 플래그 없음.
+        #   corpora='allDrives'만으로 공유 드라이브 포함 검색 처리.
+        scope_filter = ""
+        if scope == "mine":
+            scope_filter = " and 'me' in owners"
+
+        name_q = f"name contains '{data.query}' and trashed = false{mime_filter}{scope_filter}"
+        full_q = f"fullText contains '{data.query}' and trashed = false{mime_filter}{scope_filter}"
+
+        # 공유 드라이브 포함 공통 파라미터
+        list_kwargs = dict(
+            pageSize=10,
+            fields="files(id, name, mimeType, modifiedTime, webViewLink)",
+            orderBy="recency desc",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+        )
+        if scope in ("shared", "all"):
+            list_kwargs["corpora"] = "allDrives"
+
+        # 병렬 검색: name + fullText 동시 실행
+        def _search(q):
+            try:
+                return drive_svc.files().list(q=q, **list_kwargs).execute().get('files', [])
+            except Exception as sub_e:
+                print(f"⚠️ [DRIVE_SEARCH] 서브쿼리 오류: {sub_e}")
+                return []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            name_future = ex.submit(_search, name_q)
+            full_future = ex.submit(_search, full_q)
+            name_files = name_future.result()
+            full_files = full_future.result()
+
+        # 중복 제거 (ID 기준) — fullText 결과 우선, name 결과로 보강
+        seen_ids = set()
+        merged = []
+        for f in full_files + name_files:
+            if f['id'] not in seen_ids:
+                seen_ids.add(f['id'])
+                merged.append(f)
+        files = merged[:10]
 
         if not files:
-            return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과가 없습니다.**\n\n검색어: '{data.query}'{_DRIVE_DISCLAIMER}")]}
+            return {"messages": [AIMessage(content=(
+                f"📁 **드라이브 검색 결과가 없습니다.**\n\n"
+                f"검색어: **'{data.query}'** | 범위: **{scope_label}**\n\n"
+                f"다른 키워드로 다시 검색해 주세요."
+                f"{_DRIVE_DISCLAIMER}"
+            ))]}
 
         type_label = {
             'application/vnd.google-apps.document': '📄 문서',
@@ -2512,9 +2567,16 @@ def drive_search_node(state: AgentState):
             icon = type_label.get(f.get('mimeType', ''), '📄')
             modified = f.get('modifiedTime', '')[:10]
             link = f.get('webViewLink', '')
-            file_lines.append(f"{icon} [{f['name']}]({link}) — 수정일: {modified}")
+            file_lines.append(f"{icon} [{f['name']}]({link}) — {modified}")
 
-        return {"messages": [AIMessage(content=f"📁 **드라이브 검색 결과** ({len(files)}건)\n\n" + "\n".join(file_lines) + _DRIVE_DISCLAIMER)]}
+        pdf_notice = "\n\n> 💡 PDF·PPT 파일은 내부 내용이 아닌 **파일명 기준**으로만 검색됩니다."
+        return {"messages": [AIMessage(content=(
+            f"📁 **드라이브 검색 결과** ({len(files)}건 / {scope_label})\n\n"
+            + "\n".join(file_lines)
+            + pdf_notice
+            + _DRIVE_DISCLAIMER
+        ))]}
+
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
@@ -2527,7 +2589,7 @@ def drive_list_node(state: AgentState):
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
-    # 드라이브 명시 키워드 없으면 안내 반환 (오분류 방어)
+    # 드라이브 명시 키워드 없으면 안내 반환 (Supervisor 오분류 방어)
     if not any(kw in user_input for kw in DRIVE_TRIGGER_KEYWORDS):
         print("⚠️ [DRIVE_LIST] 드라이브 키워드 미감지 → 안내 반환")
         return {"messages": [AIMessage(content=(
@@ -2535,17 +2597,7 @@ def drive_list_node(state: AgentState):
             "예: \"**내 드라이브** 최근 파일 보여줘\", \"**공유받은 파일** 목록 알려줘\""
         ))]}
 
-    # 드라이브 키워드 있음 → 사용자 확인 먼저 요청 (이전 확인 응답이 없는 경우)
-    confirmed_query = _get_drive_confirmed_query(state)
-    if not confirmed_query:
-        print("❓ [DRIVE_LIST] 드라이브 키워드 감지 → 확인 질문 반환")
-        return {"messages": [AIMessage(content=(
-            f"📂 챗봇DB(공식 지식베이스)가 아닌 **{_DRIVE_CONFIRM_MARKER}**?\n\n"
-            f"> 💡 공식 사내 규정이 필요하시면 \"출장 규정 알려줘\" 형태로 질문해 주세요.\n\n"
-            f"드라이브 파일 목록을 조회하시려면 **\"네\"** 또는 **\"진행해줘\"**라고 답해주세요."
-        ))]}
-
-    print("✅ [DRIVE_LIST] 사용자 확인 완료 → 목록 조회 진행")
+    print("✅ [DRIVE_LIST] 드라이브 키워드 감지 → 즉시 목록 조회 진행")
     try:
         drive = get_workspace_service('drive', 'v3', user_email)
 
