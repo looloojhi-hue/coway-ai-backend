@@ -86,25 +86,32 @@
 
   <div id="app" class="flex flex-col min-h-screen">
     
-    <header class="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-6">
-      <div class="flex items-center gap-3 cursor-pointer" onclick="resetUI()">
-        <div class="w-8 h-8 bg-[#1A56DB] rounded-lg flex items-center justify-center text-white font-bold">C</div>
-        <span class="font-bold text-lg tracking-tight text-slate-800">Coway AI Chatbot</span>
+    <header class="h-14 md:h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50 flex items-center justify-between px-3 md:px-6">
+      <!-- 로고: 모바일 "코봇" / 데스크톱 "Coway AI Chatbot" -->
+      <div class="flex items-center gap-2 cursor-pointer shrink-0" onclick="resetUI()">
+        <div class="w-8 h-8 bg-[#1A56DB] rounded-lg flex items-center justify-center text-white font-bold shrink-0">C</div>
+        <span class="font-bold text-base md:text-lg tracking-tight text-slate-800 sm:hidden">AI 챗봇</span>
+        <span class="font-bold text-lg tracking-tight text-slate-800 hidden sm:block">Coway AI Chatbot</span>
       </div>
-      <div class="flex items-center gap-4">
-        <button onclick="startBrandNewChat()" aria-label="새 대화 시작" class="flex items-center gap-1.5 bg-white border border-slate-200 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 hover:text-[#1A56DB] transition-all shadow-sm">
-          <i data-lucide="plus-circle" class="w-4 h-4 text-[#1A56DB]"></i> 새 대화 시작
+      <!-- 우측: 새 대화 버튼 + 사용자 정보 -->
+      <div class="flex items-center gap-2 md:gap-3 min-w-0">
+        <!-- 새 대화: 모바일 아이콘만 / 데스크톱 텍스트 포함 -->
+        <button onclick="startBrandNewChat()" aria-label="새 대화 시작"
+          class="flex items-center gap-1.5 bg-white border border-slate-200 px-2 md:px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 hover:text-[#1A56DB] transition-all shadow-sm shrink-0">
+          <i data-lucide="plus-circle" class="w-4 h-4 text-[#1A56DB]"></i>
+          <span class="hidden sm:inline">새 대화 시작</span>
         </button>
-        <div id="user-profile" class="flex items-center gap-2 text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl">
-          <i data-lucide="user" class="w-4 h-4 text-slate-400"></i>
-          <span id="user-name">접속자: 확인 중...</span>
+        <!-- 접속자 정보: 모바일에서 말줄임표 처리 -->
+        <div id="user-profile" class="flex items-center gap-1.5 font-medium text-slate-600 bg-slate-100 px-2.5 md:px-3 py-1.5 rounded-xl min-w-0">
+          <i data-lucide="user" class="w-4 h-4 text-slate-400 shrink-0"></i>
+          <span id="user-name" class="text-xs md:text-sm truncate max-w-[90px] sm:max-w-[180px] md:max-w-none">접속자: 확인 중...</span>
         </div>
       </div>
     </header>
 
     <main class="flex-1 flex flex-col items-center overflow-x-hidden w-full">
       
-      <div id="dashboard-view" class="w-full max-w-6xl px-6 py-10 md:py-16 transition-all duration-500">
+      <div id="dashboard-view" class="w-full max-w-6xl px-3 md:px-6 py-8 md:py-16 transition-all duration-500">
         <div class="mb-8 text-center md:text-left">
           <h1 class="text-3xl md:text-4xl font-bold text-slate-900 mb-3 tracking-tight" id="main-greeting">
             안녕하세요! <span class="text-blue-600">AI 챗봇</span>입니다.
@@ -203,13 +210,13 @@
         </div>
       </div>
 
-      <div id="chat-view" class="w-full max-w-6xl px-6 py-8 hidden flex flex-col gap-6">
-        <div id="message-container" class="flex flex-col gap-8 pb-32"></div>
+      <div id="chat-view" class="w-full max-w-4xl px-3 md:px-6 py-6 hidden flex flex-col gap-6">
+        <div id="message-container" class="flex flex-col gap-5 md:gap-8 pb-32"></div>
       </div>
     </main>
 
-    <div id="sticky-input" class="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent z-40 hidden">
-      <div class="max-w-6xl mx-auto relative group">
+    <div id="sticky-input" class="fixed bottom-0 left-0 right-0 px-3 py-3 md:p-6 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent z-40 hidden">
+      <div class="max-w-4xl mx-auto relative group">
         <input type="text" id="chat-search-input" onkeydown="if(event.key==='Enter') handleSearch('chat-search-input')" aria-label="추가 질문 입력" class="w-full bg-white border border-slate-200 rounded-2xl py-4 pl-6 pr-24 shadow-2xl outline-none focus:ring-2 focus:ring-[#1A56DB] transition-all text-sm placeholder:text-slate-400" placeholder="추가로 궁금한 내용을 입력하세요...">
         <button onclick="handleSearch('chat-search-input')" aria-label="질문 전송" class="absolute right-2 inset-y-2 bg-[#1A56DB] text-white px-4 rounded-xl hover:bg-[#1343B5] transition-all"><i data-lucide="send" class="w-4 h-4"></i></button>
       </div>
@@ -605,11 +612,10 @@
             } else {
               lastAIAnswer = msg.content;
               const div = document.createElement('div');
-              div.className = "flex gap-4 justify-start src-ai-msg";
+              div.className = "block src-ai-msg";
               div.innerHTML = `
-                <div class="w-8 h-8 rounded-lg bg-[#1A56DB] flex items-center justify-center text-white shrink-0"><i data-lucide="zap" class="w-5 h-5 text-white"></i></div>
-                <div class="max-w-[90%] flex flex-col gap-3 flex-1">
-                  <div id="${currentMsgId}" class="bg-white border border-slate-200 ai-msg-card p-6 rounded-2xl text-slate-800 text-sm shadow-sm min-h-[100px]"></div>
+                <div class="w-full flex flex-col gap-3 min-w-0 overflow-hidden">
+                  <div id="${currentMsgId}" class="bg-white border border-slate-200 ai-msg-card p-4 md:p-6 rounded-2xl text-slate-800 text-sm shadow-sm min-h-[80px]"></div>
                 </div>`;
               container.appendChild(div);
               
@@ -830,17 +836,14 @@
     function addMessage(role, text, msgId) {
       const container = document.getElementById('message-container');
       const div = document.createElement('div');
-      div.className = `flex gap-4 fade-in ${role === 'user' ? 'justify-end' : 'justify-start'}`;
-      
+      div.className = `fade-in ${role === 'user' ? 'flex justify-end' : 'block'}`;
+
       if (role === 'user') {
-        div.innerHTML = `<div class="max-w-[80%] bg-[#1A56DB] text-white px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${text}</div>`;
+        div.innerHTML = `<div class="max-w-[85%] md:max-w-[78%] bg-[#1A56DB] text-white px-4 md:px-5 py-3 rounded-2xl rounded-tr-none text-sm shadow-md">${text}</div>`;
       } else {
         div.innerHTML = `
-          <div class="w-8 h-8 rounded-lg bg-[#1A56DB] flex items-center justify-center text-white shrink-0">
-            <i data-lucide="zap" class="w-5 h-5 text-white"></i>
-          </div>
-          <div class="max-w-[90%] flex flex-col gap-3 flex-1 min-w-0 overflow-hidden">
-            <div id="${msgId}" class="bg-white border border-slate-200 ai-msg-card p-6 rounded-2xl text-slate-800 text-sm shadow-sm min-h-[100px] overflow-x-hidden">
+          <div class="w-full flex flex-col gap-3 min-w-0 overflow-hidden">
+            <div id="${msgId}" class="bg-white border border-slate-200 ai-msg-card p-4 md:p-6 rounded-2xl text-slate-800 text-sm shadow-sm min-h-[80px] overflow-x-hidden">
               <div class="animate-pulse flex space-y-4 flex-col">
                 <div class="h-4 bg-slate-200 rounded w-3/4"></div>
                 <div class="h-4 bg-slate-200 rounded"></div>
