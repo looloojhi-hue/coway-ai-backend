@@ -230,7 +230,25 @@
     </div>
   </div>
 
-  <button onclick="openGlobalFeedbackModal()" class="fixed bottom-24 right-6 sm:bottom-6 sm:right-6 bg-slate-800 text-white px-5 py-3.5 rounded-full shadow-2xl hover:bg-slate-700 transition-all z-50 flex items-center justify-center border-2 border-white/20"><i data-lucide="message-square-plus" class="w-5 h-5"></i><span class="font-medium ml-2.5 text-sm whitespace-nowrap">시스템 개선 제안</span></button>
+  <!-- FAB: 시스템 개선 제안 플로팅 버튼 -->
+  <div class="fixed bottom-20 right-4 sm:bottom-6 sm:right-6 z-50 flex flex-col items-end gap-2">
+    <!-- 펼쳐지는 메뉴 -->
+    <div id="fab-menu"
+      class="flex flex-col items-end gap-2 mb-1 opacity-0 translate-y-2 pointer-events-none transition-all duration-200"
+      aria-hidden="true">
+      <button onclick="openGlobalFeedbackModal(); closeFabMenu()"
+        class="flex items-center gap-2 bg-slate-800 text-white pl-3.5 pr-4 py-2.5 rounded-full shadow-xl text-sm font-medium whitespace-nowrap border border-white/10 hover:bg-slate-700 active:scale-95 transition-all">
+        <i data-lucide="lightbulb" class="w-4 h-4 text-yellow-300 shrink-0"></i>
+        시스템 개선 제안
+      </button>
+    </div>
+    <!-- FAB 원형 버튼 -->
+    <button id="fab-btn" onclick="toggleFabMenu()" aria-label="시스템 개선 제안"
+      class="w-11 h-11 sm:w-12 sm:h-12 bg-slate-800 text-white rounded-full shadow-2xl hover:bg-slate-700 active:scale-90 transition-all flex items-center justify-center border-2 border-white/20">
+      <i id="fab-icon-open" data-lucide="message-square-plus" class="w-5 h-5"></i>
+      <i id="fab-icon-close" data-lucide="x" class="w-5 h-5 hidden"></i>
+    </button>
+  </div>
 
   <div id="toast" class="fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-6 py-3 rounded-xl shadow-2xl transition-all duration-300 opacity-0 translate-y-4 pointer-events-none z-[300] flex items-center gap-3"><i data-lucide="info" class="w-4 h-4 text-blue-400"></i><span id="toast-message" class="text-sm font-medium">알림 메시지</span></div>
   
@@ -1460,6 +1478,26 @@
       if(!query) return;
       showToast('🔄 새로운 답변을 다시 생성합니다...');
       quickSearch(query);
+    }
+
+    function toggleFabMenu() {
+      const menu = document.getElementById('fab-menu');
+      const isOpen = menu.getAttribute('aria-hidden') === 'false';
+      isOpen ? closeFabMenu() : openFabMenu();
+    }
+    function openFabMenu() {
+      const menu = document.getElementById('fab-menu');
+      menu.setAttribute('aria-hidden', 'false');
+      menu.classList.remove('opacity-0', 'translate-y-2', 'pointer-events-none');
+      document.getElementById('fab-icon-open').classList.add('hidden');
+      document.getElementById('fab-icon-close').classList.remove('hidden');
+    }
+    function closeFabMenu() {
+      const menu = document.getElementById('fab-menu');
+      menu.setAttribute('aria-hidden', 'true');
+      menu.classList.add('opacity-0', 'translate-y-2', 'pointer-events-none');
+      document.getElementById('fab-icon-open').classList.remove('hidden');
+      document.getElementById('fab-icon-close').classList.add('hidden');
     }
 
     function openGlobalFeedbackModal() {
