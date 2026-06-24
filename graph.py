@@ -1394,6 +1394,10 @@ def calendar_read_node(state: AgentState):
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
+    target_email = state.get("resolved_person_email", "")
+    target_name = state.get("resolved_person_name", "")
+    calendar_id = target_email if target_email else user_email
+
     now = datetime.datetime.now(datetime.timezone.utc)
     today_str = f"{now.year}년 {now.month}월 {now.day}일"
 
@@ -1444,7 +1448,7 @@ def calendar_read_node(state: AgentState):
     try:
         calendar = get_workspace_service('calendar', 'v3', user_email)
         events_result = calendar.events().list(
-            calendarId=user_email,
+            calendarId=calendar_id,
             timeMin=time_min,
             timeMax=time_max,
             singleEvents=True,
@@ -1470,12 +1474,22 @@ def calendar_read_node(state: AgentState):
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
-        print(f"⚠️ 캘린더 읽기 에러: {str(e)}")
-        schedule_text = "일정 조회 중 오류가 발생했습니다."
+        err_str = str(e)
+        print(f"⚠️ 캘린더 읽기 에러: {err_str}")
+        if target_email and ("403" in err_str or "forbidden" in err_str.lower() or "notFound" in err_str):
+            schedule_text = f"⚠️ {target_name}님의 캘린더가 공유되어 있지 않아 일정 상세를 조회할 수 없습니다."
+        else:
+            schedule_text = "일정 조회 중 오류가 발생했습니다."
 
-    prompt = f"사용자 질문: {user_input}\n조회 범위: {range_label}\n일정 데이터:\n{schedule_text}\n지시사항: 날짜·시간 기준으로 명확히 나열하고 상세내용 포함하여 요약하세요."
+    person_label = f"{target_name}님의 " if target_name else ""
+    prompt = f"사용자 질문: {user_input}\n조회 범위: {person_label}{range_label}\n일정 데이터:\n{schedule_text}\n지시사항: 날짜·시간 기준으로 명확히 나열하고 상세내용 포함하여 요약하세요."
     ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt).text
-    return {"messages": [AIMessage(content=f"📅 **{range_label} 일정 브리핑**\n\n{ai_response}")]}
+    header = f"📅 **{target_name}님의 {range_label} 일정 브리핑**" if target_name else f"📅 **{range_label} 일정 브리핑**"
+    return {
+        "messages": [AIMessage(content=f"{header}\n\n{ai_response}")],
+        "resolved_person_email": "",
+        "resolved_person_name": "",
+    }
 
 def calendar_write_node(state: AgentState):
     print("📅 [CALENDAR_WRITE] 구조화된 일정 데이터 추출 및 추가 중...")
@@ -2329,11 +2343,14 @@ def people_search_node(state: AgentState):
 
         people_list = results.get('people', [])
 
-        # CALENDAR_FREE 여유 시간 조회 컨텍스트 감지
+        # 타인 캘린더 조회 컨텍스트 감지 (CALENDAR_FREE / CALENDAR_READ 공통)
+        _pending = state.get("pending_intents") or []
         is_free_context = (
             bool(state.get("calendar_free_pending"))
-            or "CALENDAR_FREE" in (state.get("pending_intents") or [])
+            or "CALENDAR_FREE" in _pending
+            or "CALENDAR_READ" in _pending
         )
+        _is_read_ctx = "CALENDAR_READ" in _pending  # CALENDAR_READ 전용 분기용
 
         if not people_list:
             if is_free_context:
@@ -2390,18 +2407,32 @@ def people_search_node(state: AgentState):
                     "calendar_free_original_request": original_req,
                 }
             else:
-                return {
-                    "messages": [AIMessage(content=(
-                        f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
-                        f"부서명과 이름을 함께 알려주시면 여유 시간을 조회해 드릴게요.\n"
-                        f"예: \"OO팀 {data.query}님 빈 시간 알려줘\""
-                    ))],
-                    "pending_intents": [],
-                    "calendar_free_pending": True,
-                    "calendar_free_original_request": original_req,
-                    "resolved_person_email": "",
-                    "resolved_person_name": "",
-                }
+                if _is_read_ctx:
+                    # CALENDAR_READ 복수 매칭: 재입력 안내 (자동 재라우팅 없음)
+                    return {
+                        "messages": [AIMessage(content=(
+                            f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
+                            f"부서명과 이름을 함께 다시 요청해 주세요.\n"
+                            f"예: \"OO팀 {data.query}님 25일 캘린더 확인해줘\""
+                        ))],
+                        "pending_intents": [],
+                        "resolved_person_email": "",
+                        "resolved_person_name": "",
+                    }
+                else:
+                    # CALENDAR_FREE 복수 매칭: pending 플래그 → 다음 턴 자동 재라우팅
+                    return {
+                        "messages": [AIMessage(content=(
+                            f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
+                            f"부서명과 이름을 함께 알려주시면 여유 시간을 조회해 드릴게요.\n"
+                            f"예: \"OO팀 {data.query}님 빈 시간 알려줘\""
+                        ))],
+                        "pending_intents": [],
+                        "calendar_free_pending": True,
+                        "calendar_free_original_request": original_req,
+                        "resolved_person_email": "",
+                        "resolved_person_name": "",
+                    }
 
         # ── 캘린더 초대 컨텍스트 ──────────────────────────────
         if is_invite_context:
