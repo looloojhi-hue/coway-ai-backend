@@ -87,7 +87,7 @@ def parse_document_to_markdown(file_path: str) -> tuple[str, str]:
             return excel_md, extracted_team
 
     # 2. Gemini 3.5 Flash 파이프라인 (PDF, 이미지)
-    model_name = "gemini-3.5-flash" 
+    model_name = "gemini-3.5-flash"
     with open(file_path, "rb") as f:
         document_data = f.read()
     

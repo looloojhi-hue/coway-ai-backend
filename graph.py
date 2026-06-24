@@ -27,7 +27,8 @@ import langgraph_checkpoint_firestore
 # 🧠 Google I/O 2026 오피셜 에이전트 플랫폼 인프라 세팅 (신규 프로젝트 락인)
 # =====================================================================
 PROJECT_ID = "gcp-cw-ai-chatbot"
-MODEL_NAME = "gemini-3.5-flash"  # 🎯 GA 반영 완료된 최신 3.5 싱킹 엔진 명시
+MODEL_NAME = "gemini-3.5-flash"       # RAG Reasoner + BQ 리포트 전용 (품질 최우선)
+LITE_MODEL = "gemini-3.1-flash-lite"  # 라우팅·추출·요약·워크스페이스 전용 (~83% 비용 절감)
 
 # 구글 엔터프라이즈 에이전트 플랫폼 클라이언트 초기화
 ai_client = genai.Client(
@@ -364,7 +365,7 @@ def supervisor_node(state: AgentState):
 
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -445,7 +446,7 @@ def rag_refiner_node(state: AgentState):
     """
     
     response = ai_client.models.generate_content(
-        model=MODEL_NAME,
+        model=LITE_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -676,7 +677,7 @@ def general_node(state: AgentState):
     '사내 규정 및 인사/복리후생 제도'등과 관련된 질문에만 답변할 수 있다고 안내하세요
     사용자 질문: {user_input}
     """
-    response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
+    response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt)
     return {"messages": [AIMessage(content=response.text.strip())]}
 
 def bq_node(state: AgentState):
@@ -803,7 +804,7 @@ def bq_node(state: AgentState):
         print(f"♻️ [BQ] 교정된 SQL 재사용 (재시도 #{state.get('bq_retry_count', 0)}):\n{generated_sql}")
     else:
         sql_response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=[{"role": "system", "parts": [{"text": system_message}]}, {"role": "user", "parts": [{"text": user_input}]}]
         ).text
         generated_sql = sql_response.replace("```sql", "").replace("```", "").strip()
@@ -1024,7 +1025,7 @@ def bq_corrector_node(state: AgentState):
     위 에러 로그를 분석하여 에러의 원인을 완전히 제거한 '완벽하게 수정된 표준 BigQuery SQL'을 재창조하세요.
     앞뒤에 ```sql 같은 코드블록 기호는 일절 제외하고 오직 순수 교정 SQL문만 사출하세요.
     """
-    response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
+    response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt)
     corrected_sql = response.text.replace("```sql", "").replace("```", "").strip()
     print(f"♻️ [BQ Corrector] 교정 완료된 신규 SQL 사출 (시도 카운트: {retry_cnt}/2)")
     
@@ -1045,7 +1046,7 @@ def email_write_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=compose_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1114,7 +1115,7 @@ def email_read_node(state: AgentState):
     {email_text}
     비즈니스 비서 강령에 맞춰 요약 마킹 처리하세요. 사람 지칭 시 무조건 성함 뒤에 '님' 기호 체계 통일 적용하세요.
     """
-    ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
+    ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt).text
     return {"messages": [AIMessage(content=f"📧 **최신 메일 요약 브리핑**\n\n{ai_response}")]}
 
 def email_send_node(state: AgentState):
@@ -1133,7 +1134,7 @@ def email_send_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=compose_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1183,7 +1184,7 @@ Gmail 검색 연산자 예시: from:user@co.kr, subject:보고서, is:unread, af
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=search_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1215,7 +1216,7 @@ Gmail 검색 연산자 예시: from:user@co.kr, subject:보고서, is:unread, af
             email_text += f"[{idx+1}] {subject}\n  발신: {sender}\n  날짜: {date_str}\n  내용: {snippet}...\n\n"
 
         summary_prompt = f"사용자 요청: {user_input}\n검색된 메일:\n{email_text}\n검색 결과를 간결하게 정리해 주세요."
-        ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=summary_prompt).text
+        ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=summary_prompt).text
         return {"messages": [AIMessage(content=f"🔍 **메일 검색 결과** ({len(messages)}건)\n\n{ai_response}")]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
@@ -1235,7 +1236,7 @@ def email_reply_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=reply_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1267,7 +1268,7 @@ def email_reply_node(state: AgentState):
             to_addr = f"{orig_from}, {orig_to}"
 
         ai_body_prompt = f"원본 메일 발신자: {orig_from}\n원본 제목: {orig_subject}\n회신 지시사항: {data.reply_body}\n\n코웨이 비즈니스 메일 형식으로 회신 본문을 작성하세요."
-        reply_body_text = ai_client.models.generate_content(model=MODEL_NAME, contents=ai_body_prompt).text
+        reply_body_text = ai_client.models.generate_content(model=LITE_MODEL, contents=ai_body_prompt).text
 
         from email.mime.text import MIMEText
         msg = MIMEText(reply_body_text, 'plain', 'utf-8')
@@ -1316,7 +1317,7 @@ def calendar_read_node(state: AgentState):
     """
     try:
         range_response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=range_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1375,7 +1376,7 @@ def calendar_read_node(state: AgentState):
         schedule_text = "일정 조회 중 오류가 발생했습니다."
 
     prompt = f"사용자 질문: {user_input}\n조회 범위: {range_label}\n일정 데이터:\n{schedule_text}\n지시사항: 날짜·시간 기준으로 명확히 나열하고 상세내용 포함하여 요약하세요."
-    ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
+    ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt).text
     return {"messages": [AIMessage(content=f"📅 **{range_label} 일정 브리핑**\n\n{ai_response}")]}
 
 def calendar_write_node(state: AgentState):
@@ -1447,7 +1448,7 @@ def calendar_write_node(state: AgentState):
     """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=extract_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1568,7 +1569,7 @@ def task_read_node(state: AgentState):
             task_text += f"{idx + 1}. [ ] {t['title']}{due_str}{note_str}\n"
             
         prompt = f"사용자 요청: {user_input}\n할 일 목록: \n{task_text}\n비서로서 위 할 일 목록을 가독성 좋게 불릿 포인트로 요약 브리핑하고 마감일 업무를 강조하세요."
-        ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt).text
+        ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt).text
         return {"messages": [AIMessage(content=f"✅ **오늘의 할 일 브리핑**\n\n{ai_response}")]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
@@ -1597,7 +1598,7 @@ def task_write_node(state: AgentState):
     """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=extract_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1643,7 +1644,7 @@ new_notes: 수정 시 새 메모 (없으면 빈 문자열)
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=action_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1720,7 +1721,7 @@ def calendar_rsvp_node(state: AgentState):
     # LLM으로 대상 날짜 범위 파싱
     try:
         range_response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=f"""현재 날짜: {today_str}
 사용자 요청에서 조회할 날짜 범위를 추출하세요. 명시 없으면 이번 달 전체로 설정하세요.
 사용자 요청: {user_input}""",
@@ -1798,7 +1799,7 @@ def calendar_delete_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=parse_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1855,7 +1856,7 @@ def calendar_update_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=parse_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1942,7 +1943,7 @@ def calendar_free_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=parse_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -1975,7 +1976,7 @@ def calendar_free_node(state: AgentState):
 이 정보를 바탕으로 업무시간(09:00~18:00) 기준 여유 시간대를 정리하고,
 미팅 가능한 시간대를 추천해 주세요. 한국어로 친절하게 안내해 주세요.
 """
-        ai_response = ai_client.models.generate_content(model=MODEL_NAME, contents=busy_prompt).text
+        ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=busy_prompt).text
         return {"messages": [AIMessage(content=f"🕐 **일정 여유 시간 분석** ({start_date} ~ {end_date})\n\n{ai_response}")]}
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
@@ -2096,7 +2097,7 @@ def people_search_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=search_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -2208,7 +2209,7 @@ def sheet_read_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=extract_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -2299,7 +2300,7 @@ def sheet_write_node(state: AgentState):
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=extract_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -2362,7 +2363,7 @@ content는 마크다운 없이 순수 텍스트로 작성하세요. 내용 미�
 """
     try:
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=extract_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -2480,7 +2481,7 @@ max_results는 항상 10으로 설정하세요.
         import concurrent.futures
 
         response = ai_client.models.generate_content(
-            model=MODEL_NAME,
+            model=LITE_MODEL,
             contents=search_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -2931,7 +2932,7 @@ def log_to_analytics_v2(payload: dict, ai_response: str, response_status: str, i
             
             질문: {payload.get('lastQ', '')}
             """
-            response = ai_client.models.generate_content(model=MODEL_NAME, contents=inference_prompt)
+            response = ai_client.models.generate_content(model=LITE_MODEL, contents=inference_prompt)
             guessed_dept = response.text.strip()
             if any(dept in guessed_dept for dept in ["인사팀", "총무팀", "IT지원팀", "재무팀", "법무팀"]):
                 assigned_dept = guessed_dept
