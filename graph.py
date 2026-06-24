@@ -74,6 +74,8 @@ class AgentState(TypedDict):
     last_error_type: str          # 실패 유형: "PERMISSION" | "NOT_FOUND" | "SQL_ERROR" | ""
     fallback_suggested: bool      # 폴백 제안 중복 방지 플래그
     awaiting_fallback_query: str  # 폴백 확인 대기 중인 원본 쿼리
+    calendar_free_suggestions: dict   # CALENDAR_FREE 추천 슬롯 {slots, original_request, attendee_names}
+    calendar_selected_slot: dict      # 사용자 선택 슬롯 → CALENDAR_WRITE 직행 경로
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
@@ -189,6 +191,20 @@ class DocsCreateSchema(BaseModel):
     title: str          # 구글 Docs 문서 제목
     content: str        # 문서 본문 내용 (마크다운 없는 순수 텍스트)
 
+class CalendarFreeSlot(BaseModel):
+    label: str = Field(description="추천 레이블 (예: '추천 1')")
+    date: str = Field(description="날짜 YYYY-MM-DD 형식")
+    start_hour: int = Field(description="시작 시각 24시간제")
+    start_minute: int = Field(description="시작 분")
+    end_hour: int = Field(description="종료 시각 24시간제")
+    end_minute: int = Field(description="종료 분")
+    reason: str = Field(description="이 시간대를 추천하는 이유")
+
+class CalendarSuggestionsOutput(BaseModel):
+    analysis_text: str = Field(description="여유 시간 분석 및 추천 3개를 포함한 마크다운 텍스트. 마지막에 '추천 N번으로 해줘' 형식 선택 안내 포함.")
+    suggestions: List[CalendarFreeSlot] = Field(description="추천 슬롯 3개 목록")
+    attendee_names: str = Field(description="초대할 참석자 이름, 쉼표 구분. 없으면 빈 문자열")
+
 # ====================================================================
 # 🛡️ [개정 완공] 구글 워크스페이스 3-Legged OAuth 자율 토큰 관리 헬퍼 엔진
 # ====================================================================
@@ -240,6 +256,33 @@ def get_last_human_input(state: AgentState) -> str:
 def supervisor_node(state: AgentState):
     print("🚦 [Supervisor] 제미나이 3.5가 의도를 파악 중입니다...")
     user_input = get_last_human_input(state)
+
+    # Pre-check 0: CALENDAR_FREE 추천 슬롯 선택 응답 감지 ("추천 N번")
+    _free_sugg = state.get("calendar_free_suggestions")
+    if isinstance(_free_sugg, dict) and _free_sugg.get("slots"):
+        _slot_match = re.search(r'추천\s*([1-3])\s*번', user_input.strip())
+        if _slot_match:
+            _idx = int(_slot_match.group(1)) - 1
+            _slots = _free_sugg["slots"]
+            if 0 <= _idx < len(_slots):
+                _selected = dict(_slots[_idx])
+                _selected["original_request"] = _free_sugg.get("original_request", user_input)
+                _selected["attendee_names"] = _free_sugg.get("attendee_names", "")
+                print(f"✅ [Supervisor] 추천 {_idx + 1}번 선택 → CALENDAR_WRITE 직접 라우팅")
+                return {
+                    "current_intent": "CALENDAR_WRITE",
+                    "top_intent": "CALENDAR_WRITE",
+                    "pending_intents": [],
+                    "calendar_selected_slot": _selected,
+                    "calendar_free_suggestions": {},
+                    "bq_retry_count": 0,
+                    "bq_error_log": "",
+                    "last_failed_intent": "",
+                    "last_error_type": "",
+                    "fallback_suggested": False,
+                    "awaiting_fallback_query": "",
+                    "sources": []
+                }
 
     # Pre-check 1: BQ 권한 실패 후 Drive 폴백 확인 응답 감지
     if state.get("fallback_suggested") and state.get("awaiting_fallback_query"):
@@ -330,6 +373,9 @@ def supervisor_node(state: AgentState):
         예: "구글 시트에서 예산 데이터 읽어줘" → SHEET_READ / "스프레드시트에 추가해줘" → SHEET_WRITE
     13. [🔒 Docs 격리 원칙] DOCS_CREATE는 반드시 "구글 Docs", "Google Docs", "Docs 문서", "Docs로 만들어줘" 중 하나가 명시된 경우에만 사용.
         "회의록 정리해줘", "보고서 써줘" 처럼 Docs를 명시하지 않으면 GENERAL로 분류할 것.
+    14. [🔒 CALENDAR_FREE 우선 원칙] "비어있는 시간에", "여유 시간에", "빈 시간에", "내 스케줄 보고" + "일정 잡아줘/등록해줘" 조합은 반드시 CALENDAR_FREE만 발행. CALENDAR_WRITE 동시 발행 절대 금지.
+        추천 후 사용자가 "추천 N번으로 해줘" 등을 선택하면 그때 CALENDAR_WRITE가 실행됨.
+        예: "비어있는 시간에 정해인님과 30분 잡아줘" → ["PEOPLE_SEARCH", "CALENDAR_FREE"] (CALENDAR_WRITE 포함 금지)
 
     [복수 요청 예시]
     - "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
@@ -1384,6 +1430,63 @@ def calendar_write_node(state: AgentState):
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
+    # 추천 슬롯 선택으로 직행하는 경우 — LLM 시간 추출 없이 슬롯 데이터 직접 사용
+    selected_slot = state.get("calendar_selected_slot") or {}
+    if selected_slot.get("date"):
+        try:
+            date_str = selected_slot["date"]
+            year, month, day = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
+            s_h, s_m = selected_slot["start_hour"], selected_slot["start_minute"]
+            e_h, e_m = selected_slot["end_hour"], selected_slot["end_minute"]
+            start_time = datetime.datetime(year, month, day, s_h, s_m).isoformat()
+            end_time   = datetime.datetime(year, month, day, e_h, e_m).isoformat()
+            date_label = f"{month}월 {day}일 {s_h:02d}:{s_m:02d} ~ {e_h:02d}:{e_m:02d}"
+
+            # 제목 추출 (원래 요청 기반 짧은 LLM 호출)
+            original_req = selected_slot.get("original_request", user_input)
+            title_resp = ai_client.models.generate_content(
+                model=LITE_MODEL,
+                contents=f"사용자 요청: {original_req}\n미팅 일정 제목을 15자 이내 명사구로 추출하세요. 없으면 '팀 미팅' 반환.",
+            )
+            title = title_resp.text.strip().strip('"').strip("'")[:30] or "팀 미팅"
+
+            # 참석자 이름 → 이메일 변환
+            attendee_names_raw = selected_slot.get("attendee_names", "")
+            attendee_emails = []
+            if attendee_names_raw:
+                raw_list = [a.strip() for a in attendee_names_raw.split(',') if a.strip()]
+                attendee_emails, ambig_msg = _resolve_attendees_or_disambiguate(raw_list, user_email)
+                if ambig_msg:
+                    return {"messages": [AIMessage(content=ambig_msg)], "calendar_selected_slot": {}}
+                attendee_emails = [em for em in attendee_emails if em and em != user_email]
+
+            calendar = get_workspace_service('calendar', 'v3', user_email)
+            event = {
+                'summary': title,
+                'start': {'dateTime': start_time, 'timeZone': 'Asia/Seoul'},
+                'end':   {'dateTime': end_time,   'timeZone': 'Asia/Seoul'},
+            }
+            if attendee_emails:
+                event['attendees'] = [{'email': em} for em in attendee_emails]
+
+            send_updates = 'all' if attendee_emails else 'none'
+            calendar.events().insert(calendarId=user_email, body=event, sendUpdates=send_updates).execute()
+
+            attendee_line = ""
+            if attendee_emails:
+                attendee_display = attendee_names_raw or ', '.join(attendee_emails)
+                attendee_line = f"\n- **초대된 참석자:** {attendee_display} (초대 메일 자동 발송)"
+            print(f"✅ [CALENDAR_WRITE] 추천 슬롯 직행 등록 완료: {title} ({date_label})")
+            return {
+                "messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {title}\n- **기간:** {date_label}{attendee_line}\n\n구글 캘린더에 완벽하게 연동되었습니다.")],
+                "calendar_selected_slot": {},
+            }
+        except Exception as e:
+            if "AUTH_REQUIRED_FOR:" in str(e):
+                raise
+            print(f"⚠️ [CALENDAR_WRITE] 슬롯 직행 등록 에러: {e}")
+            return {"messages": [AIMessage(content=f"⚠️ 일정 추가 중 오류가 발생했습니다: {e}")], "calendar_selected_slot": {}}
+
     # 의도 검증: 새 일정 생성 요청이 아닌 경우 명확화 요청 반환
     NON_CREATE_KEYWORDS = ["참석 여부", "참석으로", "참석 체크", "초대 수락", "미응답", "참석 확인",
                            "삭제해", "취소해", "변경해", "수정해", "지워", "없애"]
@@ -1969,15 +2072,42 @@ def calendar_free_node(state: AgentState):
 
         busy_prompt = f"""
 사용자의 요청: {user_input}
+오늘 날짜: {start_date}
 조회 기간: {start_date} ~ {end_date}
 바쁜 시간대 (KST 기준):
 {chr(10).join(f"- {b['start'][:16]} ~ {b['end'][:16]}" for b in busy_periods) if busy_periods else "없음"}
 
-이 정보를 바탕으로 업무시간(09:00~18:00) 기준 여유 시간대를 정리하고,
-미팅 가능한 시간대를 추천해 주세요. 한국어로 친절하게 안내해 주세요.
+[analysis_text 작성 지침]
+- 업무시간(09:00~18:00) 기준 여유 시간대를 분석하고 [추천 1] [추천 2] [추천 3] 형식으로 각각의 특징 포함
+- 마지막 줄에 반드시 안내: "원하시는 번호로 말씀해 주세요. 예: '추천 2번으로 해줘'"
+- 한국어로 친절하게 마크다운 작성
+
+[suggestions 작성 지침]
+- 각 추천의 date(YYYY-MM-DD), start_hour/start_minute, end_hour/end_minute을 정확히 포함
+- 사용자 요청의 미팅 시간(예: 30분)을 반영하여 종료 시각 계산
+
+[attendee_names 작성 지침]
+- 사용자 요청에서 초대할 참석자 이름만 추출, 쉼표 구분. 없으면 빈 문자열.
 """
-        ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=busy_prompt).text
-        return {"messages": [AIMessage(content=f"🕐 **일정 여유 시간 분석** ({start_date} ~ {end_date})\n\n{ai_response}")]}
+        result = ai_client.models.generate_content(
+            model=LITE_MODEL,
+            contents=busy_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CalendarSuggestionsOutput,
+            ),
+        )
+        output = CalendarSuggestionsOutput(**json.loads(result.text))
+        suggestions_data = {
+            "slots": [s.model_dump() for s in output.suggestions],
+            "attendee_names": output.attendee_names,
+            "original_request": user_input,
+        }
+        return {
+            "messages": [AIMessage(content=f"🕐 **일정 여유 시간 분석** ({start_date} ~ {end_date})\n\n{output.analysis_text}")],
+            "calendar_free_suggestions": suggestions_data,
+            "calendar_selected_slot": {},
+        }
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
