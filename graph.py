@@ -40,6 +40,28 @@ ai_client = genai.Client(
 # 빅쿼리 클라이언트
 bq_client = bigquery.Client(project=PROJECT_ID)
 
+# BQ 접근 권한 체크 대상 데이터셋 (공유 권한 설정된 데이터셋들)
+_BQ_PROTECTED_DATASETS = ["hrga_travel_data", "hrga_cost_data"]
+
+def check_bq_access(user_email: str) -> bool:
+    """
+    GCP BQ 데이터셋의 공유(ACL) 설정을 직접 읽어 요청 사용자의 접근 권한을 확인.
+    서비스 계정은 ACL 조회 권한만 사용하며, 실제 BQ 쿼리 실행 전에 호출됨.
+    GCP 콘솔의 데이터셋 공유 권한이 단일 소스 오브 트루스로 작동함.
+    """
+    try:
+        for dataset_id in _BQ_PROTECTED_DATASETS:
+            dataset = bq_client.get_dataset(f"{PROJECT_ID}.{dataset_id}")
+            for entry in dataset.access_entries:
+                if entry.entity_type == "userByEmail" and entry.entity_id == user_email:
+                    print(f"✅ [BQ ACL] {user_email} → {dataset_id} 접근 허용 (role: {entry.role})")
+                    return True
+        print(f"🚫 [BQ ACL] {user_email} → 보호된 데이터셋에 권한 없음")
+        return False
+    except Exception as e:
+        print(f"⚠️ [BQ ACL] 권한 체크 중 오류 — 안전을 위해 거부: {e}")
+        return False
+
 
 # 🛡️ [Phase 5.0 신설] 기술보안팀 정원재 소장님 확정 Model Armor 쉴드 룸 세팅
 MODEL_ARMOR_LOCATION = "asia-northeast3"  # 👈 서울 리전 타격 고정
@@ -311,6 +333,7 @@ def supervisor_node(state: AgentState):
     [의도 분류 기준]
     - RAG: 사내 규정, 복리후생, 인사, 가이드 등 텍스트 문서 검색
     - BQ: 매출액, 실적, 예산, 판매량 등 수치 데이터 조회 (예: 집행비용 분석, 출장현황 분석)
+      ⚠️ "출장 비용", "해외출장 비용" 등 비용 키워드만으로 BQ 분류 금지. 반드시 "현황", "분석", "실적", "얼마 썼어" 등 실데이터 조회 문맥이 명확해야 BQ. 정책/한도/기준 문의는 RAG.
     - GENERAL: 단순 인사, 안부, 일상 대화 (예: 안녕, 넌 누구야)
     [메일 관련]
     - EMAIL_WRITE: 메일/이메일 초안 작성, 임시보관함 저장 요청 (수신자가 불명확하거나 검토 후 발송 원할 때)
@@ -386,6 +409,8 @@ def supervisor_node(state: AgentState):
     - "보고서 작성 할일 완료 처리해줘" → ["TASK_ACTION"]
     - "내 드라이브에서 2025 결산 파일 찾아줘" → ["DRIVE_SEARCH"]  ← "드라이브" 명시 필수
     - "출장 규정 알려줘" → ["RAG"]  ← 드라이브 미언급이므로 반드시 RAG
+    - "해외출장 비용 알려줘" → ["RAG"]  ← 비용 기준/한도 문의는 규정 문서 조회
+    - "해외출장 현황 분석해줘" → ["BQ"]  ← 실데이터 조회 문맥 명확
     - "연차 문서 어디 있어?" → ["RAG"]  ← 드라이브 미언급이므로 반드시 RAG
     - "스프레드시트 데이터 읽어줘" → ["SHEET_READ"]
     - "시트에 데이터 추가해줘" → ["SHEET_WRITE"]
@@ -730,15 +755,22 @@ def bq_node(state: AgentState):
     print("📊 [BQ] 제미나이 3.5 기반 자율형 다차원 데이터 애널리스트 모드 기동...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
-    
+
+    # GCP BQ 데이터셋 공유(ACL) 설정 기반 접근 권한 실검증
+    # 서비스 계정이 쿼리를 대신 실행하므로, GCP 콘솔 공유 권한을 코드 레벨에서 직접 확인
+    if not check_bq_access(user_email):
+        return {"messages": [AIMessage(content=(
+            "⚠️ **데이터 조회 권한이 없습니다.**\n\n"
+            f"'{user_email}' 계정은 해당 데이터에 접근할 권한이 부여되어 있지 않습니다.\n"
+            "데이터 조회 권한이 필요하시면 담당 부서에 문의해 주세요."
+        ))]}
+
     system_message = rf"""
     당신은 코웨이의 최고 데이터 분석가(Chief Data Analyst)입니다.
     사용자의 질문에 답변하기 위해 BigQuery 데이터베이스에 직접 유효한 표준 SQL 쿼리를 작성하고 실행하세요.
     
-    [보안 및 권한 준수 사항]
-    1. 현재 질문하는 사용자의 ID는 '{user_email}' 입니다.
-    2. 사용자 ID(@coway.com)가 BigQuery 데이터 세트 레벨에서 권한을 가진 테이블만 조회하세요.
-    3. 쿼리 실행 중 'Access Denied' 에러 발생 시, 사용자에게 권한이 없음을 정중히 안내하세요.
+    [사용자 정보]
+    현재 질문하는 사용자: '{user_email}' (GCP BQ 데이터셋 ACL 검증 완료)
 
     🚫 [절대 접근 금지 구역]
     데이터베이스에 남아있는 과거 V1 버전의 구형 테이블(general_affairs_travel, hrga_cost_budget_master 등)은 절대로 조회하지 마십시오.
