@@ -1613,6 +1613,11 @@ def calendar_write_node(state: AgentState):
     - "온라인", "화상회의", "화상 미팅", "미트", "Meet", "비대면", "Zoom", "화상", "원격" 키워드 포함 시 isOnline=true
     - 그 외 모든 경우 isOnline=false
 
+    [attendees 추출 규칙]
+    - 참석자 이름 앞에 부서명이 있으면 "부서명 이름" 형태를 그대로 유지하세요. 예: "총무팀 박상현", "개발팀 김철수"
+    - 부서명 없이 이름만 있으면 이름만 추출하세요. 예: "박상현"
+    - 여러 명은 콤마로 구분. 없으면 빈 문자열.
+
     사용자 요청: {user_input}
     """
     try:
@@ -2182,8 +2187,14 @@ def calendar_free_node(state: AgentState):
 {schedule_section}
 
 [analysis_text 작성 지침]
-- 업무시간(09:00~18:00) 기준 {context_desc}를 분석하고 [추천 1] [추천 2] [추천 3] 형식으로 각각의 특징 포함
-- 마지막 줄에 반드시 안내: "원하시는 번호로 말씀해 주세요. 예: '추천 2번으로 해줘'"
+① 날짜별 여유 시간 전체 나열 (업무시간 09:00~18:00 기준)
+  - 조회 기간 내 각 날짜마다 {context_desc}를 전부 나열
+  - 예시 형식: "📅 6월 24일(화): 09:00~10:30, 13:00~18:00 비어 있음"
+  - 바쁜 일정이 없는 날은 "종일 여유" 표시
+  - 주말(토·일)은 건너뜀
+② 추천 슬롯 3개 별도 제시 (미팅 잡기용)
+  - [추천 1] [추천 2] [추천 3] 형식, 각 추천의 날짜·시간·특징 포함
+  - 마지막 줄: "원하시는 번호로 말씀해 주세요. 예: '추천 2번으로 해줘'"
 - 한국어로 친절하게 마크다운 작성
 
 [suggestions 작성 지침]
@@ -2278,6 +2289,7 @@ def resolve_employee_email(name_or_email: str, user_email: str) -> str:
 def _resolve_attendees_or_disambiguate(raw_list: list, user_email: str) -> tuple:
     """
     참석자 이름 목록을 이메일로 변환.
+    "부서명 이름" 형태면 부서명으로 1차 필터링.
     동명이인 발견 시 즉시 빈 리스트 + 사용자에게 보여줄 안내 메시지 반환.
     정상 처리 시 (resolved_emails, "") 반환.
     반환: (resolved_emails: list[str], ambig_message: str)
@@ -2290,7 +2302,25 @@ def _resolve_attendees_or_disambiguate(raw_list: list, user_email: str) -> tuple
             resolved.append(raw)
             continue
 
-        candidates = lookup_employee_candidates(raw, user_email)
+        # 부서 접두사 분리 시도: "총무팀 박상현" → dept_prefix="총무팀", search_name="박상현"
+        dept_prefix = ""
+        search_name = raw
+        dept_match = re.match(r'^([가-힣\w]*(?:팀|부|TF|본부|지점|센터|실|파트))\s+(.+)$', raw)
+        if dept_match:
+            dept_prefix = dept_match.group(1)
+            search_name = dept_match.group(2)
+
+        candidates = lookup_employee_candidates(search_name, user_email)
+
+        # 부서명으로 1차 필터링
+        if dept_prefix and candidates:
+            dept_filtered = [c for c in candidates if dept_prefix in c.get('dept', '')]
+            if len(dept_filtered) == 1:
+                print(f"👤 [People] '{raw}' 부서명 필터 → {dept_filtered[0]['email']}")
+                resolved.append(dept_filtered[0]['email'])
+                continue
+            elif dept_filtered:
+                candidates = dept_filtered  # 복수라면 필터된 후보만 유지
 
         if len(candidates) == 0:
             print(f"⚠️ [People] '{raw}' 검색 결과 없음 — 원본 그대로 사용")
@@ -2302,14 +2332,15 @@ def _resolve_attendees_or_disambiguate(raw_list: list, user_email: str) -> tuple
 
         else:
             # 동명이인: 완전 일치하는 이름만 걸러서 1명이면 통과, 아니면 선택 요청
-            exact = [c for c in candidates if c['name'] == raw]
+            exact = [c for c in candidates if c['name'] == search_name]
             if len(exact) == 1:
                 print(f"👤 [People] '{raw}' 동명이인 중 정확 일치 1명 → {exact[0]['email']}")
                 resolved.append(exact[0]['email'])
             else:
                 # 선택 안내 블록 구성
                 target = exact if exact else candidates
-                lines = [f"**'{raw}'** 님이 여러 명 검색됩니다:"]
+                display_name = search_name if dept_prefix else raw
+                lines = [f"**'{display_name}'** 님이 여러 명 검색됩니다:"]
                 for i, c in enumerate(target, 1):
                     info = f"{c['dept']} {c['title']}".strip() or "소속 정보 없음"
                     lines.append(f"  {i}. {c['name']} ({info}) — `{c['email']}`")
@@ -2336,7 +2367,9 @@ def people_search_node(state: AgentState):
 
     search_prompt = f"""
 사용자 요청: {user_input}
-검색할 임직원 이름, 부서명, 직책 키워드(query)와 최대 결과 수(max_results, 기본 5)를 추출하세요.
+검색할 임직원의 이름과 부서명만 query에 추출하세요.
+날짜(예: 25일, 내일, 이번주), 요일, 시간, 캘린더, 일정, 확인, 조회, 알려줘 같은 단어는 query에 절대 포함하지 마세요.
+최대 결과 수(max_results, 기본 5)도 함께 추출하세요.
 """
     try:
         response = ai_client.models.generate_content(
