@@ -1673,13 +1673,25 @@ def calendar_write_node(state: AgentState):
             else:
                 date_label = f"{data.month}월 {data.day}일 {h1}:{m1} ~ {data.endMonth}월 {data.endDay}일 {h2}:{m2}"
 
-        # 참석자 처리: 동명이인 감지 → 선택 요청, 단독 매칭 → 자동 해석 후 초대
+        # 참석자 처리: PEOPLE_SEARCH에서 해소된 이메일 우선 사용, 나머지 동명이인 검사
+        pre_email = state.get("resolved_person_email", "")
+        pre_name = state.get("resolved_person_name", "")
         if data.attendees:
             raw_list = [a.strip() for a in data.attendees.split(',') if a.strip()]
-            attendee_emails, ambig_msg = _resolve_attendees_or_disambiguate(raw_list, user_email)
-            if ambig_msg:
-                return {"messages": [AIMessage(content=ambig_msg)]}
-            attendee_emails = [em for em in attendee_emails if em and em != user_email]
+            if pre_email:
+                # 이미 해소된 이름 항목 제거 후 나머지만 API 검색
+                remaining = [a for a in raw_list if not (pre_name and pre_name in a)]
+                attendee_emails, ambig_msg = _resolve_attendees_or_disambiguate(remaining, user_email)
+                if ambig_msg:
+                    return {"messages": [AIMessage(content=ambig_msg)], "resolved_person_email": "", "resolved_person_name": ""}
+                attendee_emails = [pre_email] + [em for em in attendee_emails if em and em != user_email and em != pre_email]
+            else:
+                attendee_emails, ambig_msg = _resolve_attendees_or_disambiguate(raw_list, user_email)
+                if ambig_msg:
+                    return {"messages": [AIMessage(content=ambig_msg)]}
+                attendee_emails = [em for em in attendee_emails if em and em != user_email]
+        elif pre_email:
+            attendee_emails = [pre_email]
         else:
             attendee_emails = []
 
@@ -1711,7 +1723,11 @@ def calendar_write_node(state: AgentState):
             meet_url = created_event.get('conferenceData', {}).get('entryPoints', [{}])[0].get('uri', '')
             if meet_url:
                 meet_line = f"\n- **Google Meet 링크:** {meet_url}"
-        return {"messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **기간:** {date_label}{attendee_line}{meet_line}\n\n구글 캘린더에 완벽하게 연동되었습니다.")]}
+        return {
+            "messages": [AIMessage(content=f"✅ **일정이 성공적으로 등록되었습니다!**\n\n- **일정명:** {data.title}\n- **기간:** {date_label}{attendee_line}{meet_line}\n\n구글 캘린더에 완벽하게 연동되었습니다.")],
+            "resolved_person_email": "",
+            "resolved_person_name": "",
+        }
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
@@ -2446,26 +2462,25 @@ def people_search_node(state: AgentState):
                 person_display = f"**{first['name']}**"
 
             if len(parsed) == 1:
-                # 단독 매칭: 본인 확인 + 일정 상세 한 번에 요청
-                return {"messages": [AIMessage(content=(
-                    f"👥 {person_display} 님이 맞으신가요?\n\n"
-                    f"맞으시면, 아래 내용을 알려주세요:\n\n"
-                    f"- **일정 제목**: (예: 팀미팅, 업무협의)\n"
-                    f"- **날짜**: (예: 내일, 6월 20일)\n"
-                    f"- **시작~종료 시간**: (예: 오후 3시~4시)\n\n"
-                    f"작성 예시: \"{clean_name}님과 내일 오후 3시~4시 팀미팅 잡아줘\""
-                ))]}
+                # 단독 매칭: 이메일 저장 후 침묵 → CALENDAR_WRITE가 resolved_person_email 활용
+                print(f"✅ [PEOPLE_SEARCH] CALENDAR_INVITE 단독 매칭: {clean_name} <{first['email']}>")
+                return {
+                    "messages": [],
+                    "resolved_person_email": first['email'],
+                    "resolved_person_name": clean_name,
+                }
             else:
-                # 복수 매칭: 결과 목록 + 이름/부서/일정 상세 모두 한 번에 요청
-                return {"messages": [AIMessage(content=(
-                    f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
-                    f"아래 내용을 모두 알려주시면 바로 캘린더를 생성해서 초대해드리겠습니다.\n\n"
-                    f"- **부서명 + 이름**: (위 목록에서 해당하는 분의 부서명과 이름)\n"
-                    f"- **일정 제목**: (예: 팀미팅, 업무협의)\n"
-                    f"- **날짜**: (예: 내일, 6월 20일)\n"
-                    f"- **시작~종료 시간**: (예: 오후 3시~4시)\n\n"
-                    f"작성 예시: \"OO팀 {data.query}님과 내일 오후 3시~4시 업무 미팅 잡아줘\""
-                ))]}
+                # 복수 매칭: CALENDAR_WRITE 중단 + 동명이인 재입력 안내
+                return {
+                    "messages": [AIMessage(content=(
+                        f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
+                        f"부서명을 붙여 다시 요청해 주세요.\n"
+                        f"예: \"OO팀 {data.query}님과 내일 오전 9시~10시 업무 미팅 잡아줘\""
+                    ))],
+                    "pending_intents": [],
+                    "resolved_person_email": "",
+                    "resolved_person_name": "",
+                }
 
         # ── 일반 임직원 조회 컨텍스트 (이름[부서]만 표시) ──────
         return {"messages": [AIMessage(content=(
