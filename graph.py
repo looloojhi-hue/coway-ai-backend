@@ -98,6 +98,10 @@ class AgentState(TypedDict):
     awaiting_fallback_query: str  # 폴백 확인 대기 중인 원본 쿼리
     calendar_free_suggestions: dict   # CALENDAR_FREE 추천 슬롯 {slots, original_request, attendee_names}
     calendar_selected_slot: dict      # 사용자 선택 슬롯 → CALENDAR_WRITE 직행 경로
+    resolved_person_email: str        # PEOPLE_SEARCH 단독 매칭 이메일 → CALENDAR_FREE 타인 조회용
+    resolved_person_name: str         # 단독 매칭 대상자 이름 (표시용)
+    calendar_free_pending: bool       # 동명이인으로 CALENDAR_FREE 대기 중
+    calendar_free_original_request: str  # 동명이인 해소 후 CALENDAR_FREE에서 재사용할 원본 요청
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
@@ -278,6 +282,22 @@ def get_last_human_input(state: AgentState) -> str:
 def supervisor_node(state: AgentState):
     print("🚦 [Supervisor] 제미나이 3.5가 의도를 파악 중입니다...")
     user_input = get_last_human_input(state)
+
+    # Pre-check -1: CALENDAR_FREE 동명이인 해소 대기 중 → 맥락 유지하여 재라우팅
+    if state.get("calendar_free_pending"):
+        print("✅ [Supervisor] calendar_free_pending 감지 → PEOPLE_SEARCH + CALENDAR_FREE 재라우팅")
+        return {
+            "current_intent": "PEOPLE_SEARCH",
+            "top_intent": "PEOPLE_SEARCH",
+            "pending_intents": ["CALENDAR_FREE"],
+            "bq_retry_count": 0,
+            "bq_error_log": "",
+            "last_failed_intent": "",
+            "last_error_type": "",
+            "fallback_suggested": False,
+            "awaiting_fallback_query": "",
+            "sources": []
+        }
 
     # Pre-check 0: CALENDAR_FREE 추천 슬롯 선택 응답 감지 ("추천 N번")
     _free_sugg = state.get("calendar_free_suggestions")
@@ -2069,12 +2089,16 @@ def calendar_free_node(state: AgentState):
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
 
+    target_email = state.get("resolved_person_email", "")
+    target_name = state.get("resolved_person_name", "")
+    effective_request = state.get("calendar_free_original_request") or user_input
+
     now = datetime.datetime.now()
     parse_prompt = f"""
 현재 날짜: {now.strftime('%Y-%m-%d')}
-사용자 요청: {user_input}
+사용자 요청: {effective_request}
 조회할 기간의 시작(startYear, startMonth, startDay)과 끝(endYear, endMonth, endDay)을 추출하세요.
-기간이 명확하지 않으면 오늘부터 7일간으로 설정하세요.
+날짜가 명시된 경우 해당 날짜만(startDay == endDay), 명시되지 않으면 오늘부터 7일간으로 설정하세요.
 """
     try:
         response = ai_client.models.generate_content(
@@ -2091,26 +2115,44 @@ def calendar_free_node(state: AgentState):
         time_min = datetime.datetime(data.startYear, data.startMonth, data.startDay, 0, 0).isoformat() + '+09:00'
         time_max = datetime.datetime(data.endYear, data.endMonth, data.endDay, 23, 59).isoformat() + '+09:00'
 
+        freebusy_items = [{"id": "primary"}]
+        if target_email:
+            freebusy_items.append({"id": target_email})
+
         freebusy_result = cal.freebusy().query(body={
             "timeMin": time_min, "timeMax": time_max,
             "timeZone": "Asia/Seoul",
-            "items": [{"id": "primary"}]
+            "items": freebusy_items
         }).execute()
 
-        busy_periods = freebusy_result.get('calendars', {}).get('primary', {}).get('busy', [])
+        calendars_data = freebusy_result.get('calendars', {})
+        my_busy = calendars_data.get('primary', {}).get('busy', [])
+        target_busy = calendars_data.get(target_email, {}).get('busy', []) if target_email else []
 
         start_date = datetime.date(data.startYear, data.startMonth, data.startDay)
         end_date = datetime.date(data.endYear, data.endMonth, data.endDay)
 
+        def fmt_busy(periods):
+            return "\n".join(f"- {b['start'][:16]} ~ {b['end'][:16]}" for b in periods) if periods else "없음"
+
+        if target_email and target_name:
+            schedule_section = (
+                f"나의 바쁜 시간대 (KST):\n{fmt_busy(my_busy)}\n\n"
+                f"{target_name}님의 바쁜 시간대 (KST):\n{fmt_busy(target_busy)}"
+            )
+            context_desc = f"나와 {target_name}님 모두 가능한 여유 시간"
+        else:
+            schedule_section = f"바쁜 시간대 (KST 기준):\n{fmt_busy(my_busy)}"
+            context_desc = "여유 시간"
+
         busy_prompt = f"""
-사용자의 요청: {user_input}
+사용자의 요청: {effective_request}
 오늘 날짜: {start_date}
 조회 기간: {start_date} ~ {end_date}
-바쁜 시간대 (KST 기준):
-{chr(10).join(f"- {b['start'][:16]} ~ {b['end'][:16]}" for b in busy_periods) if busy_periods else "없음"}
+{schedule_section}
 
 [analysis_text 작성 지침]
-- 업무시간(09:00~18:00) 기준 여유 시간대를 분석하고 [추천 1] [추천 2] [추천 3] 형식으로 각각의 특징 포함
+- 업무시간(09:00~18:00) 기준 {context_desc}를 분석하고 [추천 1] [추천 2] [추천 3] 형식으로 각각의 특징 포함
 - 마지막 줄에 반드시 안내: "원하시는 번호로 말씀해 주세요. 예: '추천 2번으로 해줘'"
 - 한국어로 친절하게 마크다운 작성
 
@@ -2119,7 +2161,7 @@ def calendar_free_node(state: AgentState):
 - 사용자 요청의 미팅 시간(예: 30분)을 반영하여 종료 시각 계산
 
 [attendee_names 작성 지침]
-- 사용자 요청에서 초대할 참석자 이름만 추출, 쉼표 구분. 없으면 빈 문자열.
+- 사용자 요청에서 초대할 참석자 이름만 추출, 쉼표 구분. 타인 캘린더 조회 시 그 사람 이름 포함. 없으면 빈 문자열.
 """
         result = ai_client.models.generate_content(
             model=LITE_MODEL,
@@ -2132,13 +2174,22 @@ def calendar_free_node(state: AgentState):
         output = CalendarSuggestionsOutput(**json.loads(result.text))
         suggestions_data = {
             "slots": [s.model_dump() for s in output.suggestions],
-            "attendee_names": output.attendee_names,
-            "original_request": user_input,
+            "attendee_names": output.attendee_names or target_name,
+            "original_request": effective_request,
         }
+        header = (
+            f"🕐 **{target_name}님과의 여유 시간** ({start_date} ~ {end_date})"
+            if target_name else
+            f"🕐 **일정 여유 시간 분석** ({start_date} ~ {end_date})"
+        )
         return {
-            "messages": [AIMessage(content=f"🕐 **일정 여유 시간 분석** ({start_date} ~ {end_date})\n\n{output.analysis_text}")],
+            "messages": [AIMessage(content=f"{header}\n\n{output.analysis_text}")],
             "calendar_free_suggestions": suggestions_data,
             "calendar_selected_slot": {},
+            "resolved_person_email": "",
+            "resolved_person_name": "",
+            "calendar_free_pending": False,
+            "calendar_free_original_request": "",
         }
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
@@ -2278,7 +2329,24 @@ def people_search_node(state: AgentState):
 
         people_list = results.get('people', [])
 
+        # CALENDAR_FREE 여유 시간 조회 컨텍스트 감지
+        is_free_context = (
+            bool(state.get("calendar_free_pending"))
+            or "CALENDAR_FREE" in (state.get("pending_intents") or [])
+        )
+
         if not people_list:
+            if is_free_context:
+                return {
+                    "messages": [AIMessage(content=(
+                        f"👥 **'{data.query}'** 님을 찾을 수 없습니다.\n"
+                        "다른 이름이나 부서명으로 다시 말씀해 주세요."
+                    ))],
+                    "pending_intents": [],
+                    "calendar_free_pending": False,
+                    "resolved_person_email": "",
+                    "resolved_person_name": "",
+                }
             return {"messages": [AIMessage(content=(
                 f"👥 **'{data.query}'** 검색 결과가 없습니다.\n\n"
                 "다른 이름이나 부서명으로 다시 검색해 주세요."
@@ -2306,6 +2374,34 @@ def people_search_node(state: AgentState):
                 dept_tag = ""
             lines.append(f"**{p['name']}**{dept_tag}")
         result_text = "\n".join(f"{i+1}. {line}" for i, line in enumerate(lines))
+
+        # ── CALENDAR_FREE 타인 여유 시간 조회 컨텍스트 ───────────
+        if is_free_context:
+            original_req = state.get("calendar_free_original_request") or user_input
+            first = parsed[0]
+            clean_name = first['name'].split('[')[0].strip()
+            if len(parsed) == 1:
+                print(f"✅ [PEOPLE_SEARCH] CALENDAR_FREE 단독 매칭: {clean_name} <{first['email']}>")
+                return {
+                    "messages": [],
+                    "resolved_person_email": first['email'],
+                    "resolved_person_name": clean_name,
+                    "calendar_free_pending": False,
+                    "calendar_free_original_request": original_req,
+                }
+            else:
+                return {
+                    "messages": [AIMessage(content=(
+                        f"👥 **'{data.query}'** 님이 여러 분 검색됩니다:\n\n{result_text}\n\n"
+                        f"부서명과 이름을 함께 알려주시면 여유 시간을 조회해 드릴게요.\n"
+                        f"예: \"OO팀 {data.query}님 빈 시간 알려줘\""
+                    ))],
+                    "pending_intents": [],
+                    "calendar_free_pending": True,
+                    "calendar_free_original_request": original_req,
+                    "resolved_person_email": "",
+                    "resolved_person_name": "",
+                }
 
         # ── 캘린더 초대 컨텍스트 ──────────────────────────────
         if is_invite_context:
