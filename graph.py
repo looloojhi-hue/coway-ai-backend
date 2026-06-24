@@ -403,6 +403,7 @@ def supervisor_node(state: AgentState):
     7. "회신", "답장", "답변 메일" → EMAIL_REPLY / "메일 찾아줘", "메일 검색" → EMAIL_SEARCH
     8. "할일 완료", "완료로 표시", "삭제해줘(할일)", "할일 수정" → TASK_ACTION
     9. "이름 + 연락처/이메일/부서/직책/전화번호 찾아줘" → PEOPLE_SEARCH
+       "이름 + 캘린더/일정 조회/확인/알려줘" → ["PEOPLE_SEARCH", "CALENDAR_READ"] (예: "박상현님 캘린더 확인해줘", "총무팀 신언진님 일정 조회해줘")
        "이름 + 캘린더 초대" 요청 시 (일정 제목·날짜·시간 미포함) → PEOPLE_SEARCH 단독. 대상자 확인 후 사용자가 일정 상세를 입력하면 그때 CALENDAR_WRITE 실행.
        "이름 + 일정 제목 + 날짜 + 시간" 모두 명시된 경우에만 → CALENDAR_WRITE 직접 (예: "김영훈님과 내일 오후 3시 팀미팅 잡아줘")
     10. [🔒 드라이브 격리 원칙 — 절대 준수]
@@ -423,6 +424,7 @@ def supervisor_node(state: AgentState):
     [복수 요청 예시]
     - "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
     - "메일 요약하고 오늘 일정도 알려줘" → ["EMAIL_READ", "CALENDAR_READ"]
+    - "박상현님 캘린더 확인해줘", "총무팀 신언진님 일정 조회해줘" → ["PEOPLE_SEARCH", "CALENDAR_READ"]
     - "김과장한테 보고서 완료 메일 바로 보내줘" → ["EMAIL_SEND"]
     - "내일 팀회의 시간 2시로 바꿔줘" → ["CALENDAR_UPDATE"]
     - "이번주 빈 시간 알려줘" → ["CALENDAR_FREE"]
@@ -2167,6 +2169,14 @@ def calendar_free_node(state: AgentState):
         start_date = datetime.date(data.startYear, data.startMonth, data.startDay)
         end_date = datetime.date(data.endYear, data.endMonth, data.endDay)
 
+        # 날짜→요일 사전 계산 (LLM이 직접 계산하면 틀림)
+        _days_ko = ["월", "화", "수", "목", "금", "토", "일"]
+        _d, _date_map_lines = start_date, []
+        while _d <= end_date:
+            _date_map_lines.append(f"{_d.month}월 {_d.day}일={_days_ko[_d.weekday()]}요일")
+            _d += datetime.timedelta(days=1)
+        date_weekday_info = ", ".join(_date_map_lines)
+
         def fmt_busy(periods):
             return "\n".join(f"- {b['start'][:16]} ~ {b['end'][:16]}" for b in periods) if periods else "없음"
 
@@ -2184,12 +2194,14 @@ def calendar_free_node(state: AgentState):
 사용자의 요청: {effective_request}
 오늘 날짜: {start_date}
 조회 기간: {start_date} ~ {end_date}
+날짜-요일 정보 (직접 계산 금지, 반드시 이 값만 사용): {date_weekday_info}
 {schedule_section}
 
 [analysis_text 작성 지침]
-① 날짜별 여유 시간 전체 나열 (업무시간 09:00~18:00 기준)
+① 날짜별 여유 시간 전체 나열 (업무시간 09:00-18:00 기준)
   - 조회 기간 내 각 날짜마다 {context_desc}를 전부 나열
-  - 예시 형식: "📅 6월 24일(화): 09:00~10:30, 13:00~18:00 비어 있음"
+  - 요일은 위 날짜-요일 정보에서만 참조할 것
+  - 형식: "📅 N월 M일(X요일): HH:MM-HH:MM, HH:MM-HH:MM 비어 있음" (시간 구분자는 반드시 하이픈(-))
   - 바쁜 일정이 없는 날은 "종일 여유" 표시
   - 주말(토·일)은 건너뜀
 ② 추천 슬롯 3개 별도 제시 (미팅 잡기용)
