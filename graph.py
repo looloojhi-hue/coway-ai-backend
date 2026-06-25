@@ -1281,19 +1281,23 @@ def email_read_node(state: AgentState):
         gmail = get_workspace_service('gmail', 'v1', user_email)
 
         # 조회 조건 결정
-        if "중요" in user_input:
-            # 최근 2주 필터: Gmail is:important는 날짜 무관 전체에서 가져오므로 제한 필요
-            q = 'is:important in:inbox newer_than:14d'
+        is_important_mode = "중요" in user_input
+        if is_important_mode:
+            # 최근 2주 전체 받은편지함(읽음 무관) — LLM이 실제 중요도 판단
+            q = 'in:inbox newer_than:14d -is:spam -category:promotions'
+            max_results = 30  # 더 많이 가져와서 LLM이 필터링
         elif "별표" in user_input or "starred" in user_input.lower():
             q = 'is:starred in:inbox newer_than:14d'
+            max_results = 10
         else:
             q = 'is:unread in:inbox'
+            max_results = 10
         if "오늘" in user_input:
             q = q.split('newer_than')[0].strip() + ' newer_than:1d'
         elif "이번 주" in user_input or "이번주" in user_input:
             q = q.split('newer_than')[0].strip() + ' newer_than:7d'
 
-        results = gmail.users().messages().list(userId=user_email, q=q, maxResults=10).execute()
+        results = gmail.users().messages().list(userId=user_email, q=q, maxResults=max_results).execute()
         messages = results.get('messages', [])
 
         if not messages:
@@ -1332,7 +1336,38 @@ def email_read_node(state: AgentState):
             f"[메일 {e['num']}] 발신: {e['from_name']} | 제목: {e['subject']} | 내용: {e['snippet']}"
             for e in raw_emails
         ])
-        analyze_prompt = f"""
+
+        if is_important_mode:
+            # 중요 메일 모드: LLM이 스팸·광고·반복알림을 걸러내고 업무 중요 메일만 선별
+            analyze_prompt = f"""
+현재 날짜: {today_str}
+아래는 최근 2주 받은 메일 목록입니다. 업무상 중요한 메일만 선별하여 반환하세요.
+
+[제외 기준 — items에 포함하지 마세요]
+- 광고·홍보: 제목에 "(광고)", "🅰️", "AD", 뉴스레터, 구독 메일
+- 자동 발송 알림: 시스템 공지, 배송알림, 정기 발송물, 학습현황 안내
+- 단순 안부·인사: 새해인사, 감사인사, 명절 인사, 연말 인사
+- 완료된 단순 FYI: 읽으면 끝인 공지, 조치 불필요한 안내
+- 반복 수신 메일: 동일/유사 제목이 여러 건이면 최신 1건만 포함
+
+[포함 기준]
+- 결재·처리·검토 요청 (예: [처리요청], 승인 요청)
+- 마감기한이 있는 업무 지시
+- 답변·확인·신청이 필요한 메일
+- 중요 업무 변경사항·공지 (읽음 여부 무관)
+
+{email_data_text}
+
+각 선별된 메일에 대해:
+- num: 원본 메일 번호 (위 목록의 번호 그대로)
+- from_name: 발신자 이름
+- subject: 메일 제목
+- brief_summary: 핵심 내용 1-2문장 (비즈니스 어투)
+- detected_due_date: 처리기한/마감일이 명시적으로 언급된 경우만 YYYY-MM-DD, 없으면 빈 문자열
+- needs_action: 답변/신청/처리가 필요하면 true
+"""
+        else:
+            analyze_prompt = f"""
 현재 날짜: {today_str}
 아래 메일들을 분석하세요:
 {email_data_text}
