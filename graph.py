@@ -102,6 +102,11 @@ class AgentState(TypedDict):
     resolved_person_name: str         # 단독 매칭 대상자 이름 (표시용)
     calendar_free_pending: bool       # 동명이인으로 CALENDAR_FREE 대기 중
     calendar_free_original_request: str  # 동명이인 해소 후 CALENDAR_FREE에서 재사용할 원본 요청
+    email_task_candidates: list       # 메일 요약 후 Task 등록 후보 [{num, subject, from_name, summary, message_id, detected_due}]
+    email_unread_ids: list            # 읽음 처리 대상 message_id 목록 (unread만)
+    email_selected_for_task: list     # Supervisor Pre-check이 선택한 Task 등록 대상 이메일
+    email_task_override_due: str      # 사용자가 직접 지정한 마감일 (YYYY-MM-DD)
+    email_mark_read_nums: list        # 읽음 처리할 번호 목록 (빈 리스트 = 전부)
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
@@ -142,6 +147,17 @@ class TaskSchema(BaseModel):
     title: str
     notes: str
     due: str
+
+class EmailItem(BaseModel):
+    num: int
+    from_name: str
+    subject: str
+    brief_summary: str
+    detected_due_date: str   # YYYY-MM-DD 또는 빈 문자열
+    needs_action: bool       # 수신자 액션이 필요한 메일 여부
+
+class EmailBriefingOutput(BaseModel):
+    items: List[EmailItem]
 
 class EmailComposeSchema(BaseModel):
     to: str           # 수신자 이메일, 복수면 콤마 구분
@@ -325,6 +341,64 @@ def supervisor_node(state: AgentState):
                     "awaiting_fallback_query": "",
                     "sources": []
                 }
+
+    # Pre-check A: 메일 요약 후 구글 TASK 등록 요청 감지
+    _email_candidates = state.get("email_task_candidates")
+    if isinstance(_email_candidates, list) and _email_candidates:
+        _task_kw = any(kw in user_input for kw in ["task", "Task", "TASK", "할일", "할 일", "해야할", "등록", "추가", "넣어"])
+        if _task_kw:
+            # 선택 번호 파싱
+            selected_nums = set()
+            if any(kw in user_input for kw in ["전부", "전체", "모두", "다 ", "다등록", "다추가"]):
+                selected_nums = set(c['num'] for c in _email_candidates)
+            else:
+                for m in re.finditer(r'\b([1-9])\b', user_input):
+                    selected_nums.add(int(m.group(1)))
+
+            selected_emails = [c for c in _email_candidates if c['num'] in selected_nums]
+            if selected_emails:
+                # 사용자 입력에서 마감일 추출
+                due_match = re.search(r'마감일?\s*[:\s]*(\d{1,2})월\s*(\d{1,2})일', user_input)
+                user_due = ""
+                if due_match:
+                    now = datetime.datetime.now()
+                    m_month, m_day = int(due_match.group(1)), int(due_match.group(2))
+                    user_due = f"{now.year}-{m_month:02d}-{m_day:02d}"
+
+                print(f"✅ [Supervisor] 이메일→Task 등록 감지 ({len(selected_emails)}건) → TASK_WRITE 직행")
+                return {
+                    "current_intent": "TASK_WRITE",
+                    "top_intent": "TASK_WRITE",
+                    "pending_intents": [],
+                    "email_selected_for_task": selected_emails,
+                    "email_task_override_due": user_due,
+                    "email_task_candidates": [],
+                    "bq_retry_count": 0, "bq_error_log": "",
+                    "last_failed_intent": "", "last_error_type": "",
+                    "fallback_suggested": False, "awaiting_fallback_query": "",
+                    "sources": [],
+                }
+
+    # Pre-check B: 읽음 처리 요청 감지
+    _email_candidates_for_read = state.get("email_task_candidates")
+    if isinstance(_email_candidates_for_read, list) and _email_candidates_for_read:
+        _read_kw = any(kw in user_input for kw in ["읽음", "읽음 처리", "읽음으로", "읽었다", "확인 처리"])
+        if _read_kw:
+            mark_nums = []
+            if not any(kw in user_input for kw in ["전부", "전체", "모두", "다 ", "다 읽", "전체 읽"]):
+                for m in re.finditer(r'\b([1-9])\b', user_input):
+                    mark_nums.append(int(m.group(1)))
+            print(f"✅ [Supervisor] 읽음 처리 감지 → EMAIL_MARK_READ 직행")
+            return {
+                "current_intent": "EMAIL_MARK_READ",
+                "top_intent": "EMAIL_MARK_READ",
+                "pending_intents": [],
+                "email_mark_read_nums": mark_nums,
+                "bq_retry_count": 0, "bq_error_log": "",
+                "last_failed_intent": "", "last_error_type": "",
+                "fallback_suggested": False, "awaiting_fallback_query": "",
+                "sources": [],
+            }
 
     # Pre-check 1: BQ 권한 실패 후 Drive 폴백 확인 응답 감지
     if state.get("fallback_suggested") and state.get("awaiting_fallback_query"):
@@ -1179,44 +1253,216 @@ def email_write_node(state: AgentState):
         return {"messages": [AIMessage(content=f"⚠️ 이메일 초안 작성 중 오류: {str(e)}")]}
 
 def email_read_node(state: AgentState):
-    print("📧 [EMAIL_READ] 안읽은 메일을 수신하여 브리핑 정제 중...")
+    print("📧 [EMAIL_READ] 메일 수신 및 에이전트 브리핑 생성 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
-    
-    email_text = ""
+
     try:
         gmail = get_workspace_service('gmail', 'v1', user_email)
-        q = 'is:unread in:inbox'
+
+        # 조회 조건 결정
+        if "중요" in user_input:
+            q = 'is:important in:inbox'
+        elif "별표" in user_input or "starred" in user_input.lower():
+            q = 'is:starred in:inbox'
+        else:
+            q = 'is:unread in:inbox'
         if "오늘" in user_input:
             q += ' newer_than:1d'
-            
-        results = gmail.users().messages().list(userId=user_email, q=q, maxResults=20).execute()
+
+        results = gmail.users().messages().list(userId=user_email, q=q, maxResults=10).execute()
         messages = results.get('messages', [])
-        
+
         if not messages:
-            return {"messages": [AIMessage(content="📭 **현재 조건에 맞는 읽지 않은 새로운 메일이 없습니다.**")]}
-            
+            return {
+                "messages": [AIMessage(content="📭 **현재 조건에 맞는 메일이 없습니다.**")],
+                "email_task_candidates": [],
+                "email_unread_ids": [],
+            }
+
+        # 메일 메타데이터 수집
+        raw_emails = []
+        unread_ids = []
         for idx, msg_info in enumerate(messages):
-            msg = gmail.users().messages().get(userId=user_email, id=msg_info['id'], format='metadata', metadataHeaders=['From', 'Subject']).execute()
+            msg = gmail.users().messages().get(
+                userId=user_email, id=msg_info['id'],
+                format='metadata', metadataHeaders=['From', 'Subject']
+            ).execute()
             headers = msg.get('payload', {}).get('headers', [])
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
-            sender = next((h['value'] for h in headers if h['name'] == 'From'), '알수없음').split('<')[0].strip()
-            snippet = msg.get('snippet', '내용 없음')
-            email_text += f"[메일 {idx + 1}]\n- 보낸사람: {sender}\n- 제목: {subject}\n- 내용: {snippet}...\n\n"
+            sender_raw = next((h['value'] for h in headers if h['name'] == 'From'), '알수없음')
+            sender = sender_raw.split('<')[0].strip().strip('"')
+            snippet = msg.get('snippet', '')
+            if 'UNREAD' in msg.get('labelIds', []):
+                unread_ids.append(msg_info['id'])
+            raw_emails.append({
+                "num": idx + 1,
+                "message_id": msg_info['id'],
+                "subject": subject,
+                "from_name": sender,
+                "snippet": snippet,
+            })
+
+        # LLM: 각 메일 요약 + 마감일 감지 + 액션 필요 여부
+        today_str = datetime.datetime.now().strftime('%Y년 %m월 %d일')
+        email_data_text = "\n".join([
+            f"[메일 {e['num']}] 발신: {e['from_name']} | 제목: {e['subject']} | 내용: {e['snippet']}"
+            for e in raw_emails
+        ])
+        analyze_prompt = f"""
+현재 날짜: {today_str}
+아래 메일들을 분석하세요:
+{email_data_text}
+
+각 메일에 대해:
+- num: 메일 번호
+- from_name: 발신자 이름 (성함 뒤 '님' 없이)
+- subject: 메일 제목
+- brief_summary: 핵심 내용 1-2문장 요약 (비즈니스 어투)
+- detected_due_date: 처리기한/마감일이 명시적으로 언급된 경우만 YYYY-MM-DD 형식으로, 없으면 빈 문자열
+- needs_action: 수신자가 답변/신청/처리해야 하는 액션이 필요한 메일이면 true
+"""
+        analysis_resp = ai_client.models.generate_content(
+            model=LITE_MODEL,
+            contents=analyze_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=EmailBriefingOutput,
+            ),
+        )
+        analyzed = EmailBriefingOutput(**json.loads(analysis_resp.text))
+
+        # Task 후보 구성 (message_id 포함)
+        task_candidates = []
+        for item in analyzed.items:
+            orig = next((e for e in raw_emails if e['num'] == item.num), None)
+            task_candidates.append({
+                "num": item.num,
+                "subject": item.subject,
+                "from_name": item.from_name,
+                "summary": item.brief_summary,
+                "message_id": orig['message_id'] if orig else "",
+                "detected_due": item.detected_due_date,
+            })
+
+        # 응답 본문 구성
+        lines = [f"📧 **메일 브리핑** ({len(analyzed.items)}건)\n"]
+        action_nums = []
+        for item in analyzed.items:
+            action_mark = " ⚡" if item.needs_action else ""
+            due_line = f"\n   📅 마감일: {item.detected_due_date}" if item.detected_due_date else ""
+            lines.append(
+                f"**[{item.num}] {item.from_name}님** — {item.subject}{action_mark}\n"
+                f"→ {item.brief_summary}{due_line}\n"
+            )
+            if item.needs_action:
+                action_nums.append(str(item.num))
+
+        summary_text = "\n".join(lines)
+
+        # 에이전트 제안 블록
+        example_nums = ", ".join(action_nums[:2]) if action_nums else "1"
+        has_actionable = bool(action_nums)
+
+        if has_actionable:
+            agent_intro = (
+                f"⚡ 표시된 메일은 처리가 필요한 항목이에요. "
+                f"중요한 업무를 **구글 TASK(해야할일)** 로 등록해두시면 "
+                f"구글 워크스페이스에서 체계적으로 관리할 수 있습니다!"
+            )
+        else:
+            agent_intro = (
+                f"메일 내용을 **구글 TASK(해야할일)** 로 등록해두시면 "
+                f"구글 워크스페이스에서 놓치지 않고 관리할 수 있어요!"
+            )
+
+        suggestion_block = (
+            f"\n---\n\n"
+            f"🤖 **코봇 에이전트 제안**\n\n"
+            f"{agent_intro}\n\n"
+            f"**✅ 구글 TASK(해야할일) 등록**\n"
+            f"등록할 메일 번호를 말씀해 주세요.\n"
+            f"> 예: `\"{example_nums}번 task 등록해줘\"` / `\"전부 구글 할일에 추가해줘\"`\n"
+            f"> 마감일이 있다면 함께 알려주세요! 예: `\"{example_nums}번 task 등록, 마감일 7월 5일\"`\n"
+        )
+
+        if unread_ids:
+            suggestion_block += (
+                f"\n**📬 읽음 처리**\n"
+                f"안읽은 메일({len(unread_ids)}건)을 읽음으로 처리할 수도 있어요.\n"
+                f"> 예: `\"전부 읽음 처리해줘\"` / `\"1, 2번만 읽음 처리해줘\"`"
+            )
+
+        return {
+            "messages": [AIMessage(content=summary_text + suggestion_block)],
+            "email_task_candidates": task_candidates,
+            "email_unread_ids": unread_ids,
+        }
+
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
         print(f"⚠️ Gmail 읽기 에러: {str(e)}")
-        return {"messages": [AIMessage(content="⚠️ 메일 접근 권한이 없거나 불러오는 중 오류가 발생했습니다.")]}
+        return {
+            "messages": [AIMessage(content="⚠️ 메일 접근 권한이 없거나 불러오는 중 오류가 발생했습니다.")],
+            "email_task_candidates": [],
+            "email_unread_ids": [],
+        }
 
-    prompt = f"""
-    사용자 요청: {user_input}
-    [안 읽은 최신 메일 데이터]
-    {email_text}
-    비즈니스 비서 강령에 맞춰 요약 마킹 처리하세요. 사람 지칭 시 무조건 성함 뒤에 '님' 기호 체계 통일 적용하세요.
-    """
-    ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt).text
-    return {"messages": [AIMessage(content=f"📧 **최신 메일 요약 브리핑**\n\n{ai_response}")]}
+def email_mark_read_node(state: AgentState):
+    print("📬 [EMAIL_MARK_READ] 읽음 처리 중...")
+    user_email = state["user_info"].get("email", "unknown")
+    candidates = state.get("email_task_candidates") or []
+    mark_nums = state.get("email_mark_read_nums") or []
+
+    # 전체 message_id 목록: email_task_candidates에서 번호 기준으로 추출
+    if not candidates:
+        return {
+            "messages": [AIMessage(content="📭 처리할 메일 정보가 없습니다. 먼저 메일을 조회해 주세요.")],
+            "email_unread_ids": [],
+        }
+
+    # 대상 선택: 번호 지정 없으면 전체
+    if mark_nums:
+        to_mark = [c for c in candidates if c['num'] in mark_nums]
+    else:
+        to_mark = list(candidates)
+
+    try:
+        gmail = get_workspace_service('gmail', 'v1', user_email)
+        marked = []
+        for item in to_mark:
+            msg_id = item.get("message_id", "")
+            if not msg_id:
+                continue
+            gmail.users().messages().modify(
+                userId='me',
+                id=msg_id,
+                body={'removeLabelIds': ['UNREAD']}
+            ).execute()
+            marked.append(f"✉ **{item['subject']}** — {item['from_name']}님")
+
+        if not marked:
+            return {"messages": [AIMessage(content="📭 읽음 처리할 메일이 없습니다.")]}
+
+        marked_text = "\n".join(marked)
+        print(f"✅ [EMAIL_MARK_READ] {len(marked)}건 읽음 처리 완료")
+        return {
+            "messages": [AIMessage(content=(
+                f"✅ **{len(marked)}건의 메일을 읽음으로 처리했습니다!**\n\n"
+                f"{marked_text}\n\n"
+                f"Gmail에 즉시 반영됩니다."
+            ))],
+            "email_unread_ids": [],
+            "email_task_candidates": [],
+            "email_mark_read_nums": [],
+        }
+    except Exception as e:
+        if "AUTH_REQUIRED_FOR:" in str(e):
+            raise
+        print(f"⚠️ [EMAIL_MARK_READ] 읽음 처리 에러: {e}")
+        return {"messages": [AIMessage(content=f"⚠️ 읽음 처리 중 오류가 발생했습니다: {str(e)}")]}
+
 
 def email_send_node(state: AgentState):
     print("📤 [EMAIL_SEND] 이메일 즉시 발송 처리 중...")
@@ -1792,6 +2038,45 @@ def task_write_node(state: AgentState):
     print("📝 [TASK_WRITE] 단기 대화 맥락 분석 및 구글 할 일 추가 중...")
     user_input = get_last_human_input(state)
     user_email = state["user_info"].get("email", "unknown")
+
+    # 메일 → Task 직행 경로 (Supervisor Pre-check A가 선택한 이메일들)
+    email_tasks = state.get("email_selected_for_task") or []
+    if email_tasks:
+        override_due = state.get("email_task_override_due") or ""
+        try:
+            tasks_service = get_workspace_service('tasks', 'v1', user_email)
+            registered = []
+            for item in email_tasks:
+                due = item.get("detected_due") or override_due or ""
+                task_body = {
+                    'title': item['subject'],
+                    'notes': f"발신: {item['from_name']}님\n\n{item['summary']}",
+                }
+                if due:
+                    task_body['due'] = due + "T00:00:00.000Z"
+                tasks_service.tasks().insert(tasklist='@default', body=task_body).execute()
+                due_str = f" (마감: {due})" if due else ""
+                registered.append(f"☑ **{item['subject']}** — {item['from_name']}님{due_str}")
+
+            tasks_text = "\n".join(registered)
+            print(f"✅ [TASK_WRITE] 메일→Task {len(registered)}건 등록 완료")
+            return {
+                "messages": [AIMessage(content=(
+                    f"✅ **{len(registered)}개의 구글 TASK(해야할일)가 등록되었습니다!**\n\n"
+                    f"{tasks_text}\n\n"
+                    f"구글 워크스페이스 우측 패널 **Tasks 탭**에서 바로 확인하실 수 있습니다. 🎯"
+                ))],
+                "email_selected_for_task": [],
+                "email_task_override_due": "",
+            }
+        except Exception as e:
+            if "AUTH_REQUIRED_FOR:" in str(e):
+                raise
+            print(f"⚠️ [TASK_WRITE] 메일→Task 등록 에러: {e}")
+            return {
+                "messages": [AIMessage(content=f"⚠️ Task 등록 중 오류가 발생했습니다: {str(e)}")],
+                "email_selected_for_task": [],
+            }
 
     # 의도 검증: 새 할일 생성 요청이 아닌 경우 명확화 요청 반환
     NON_CREATE_TASK_KEYWORDS = ["완료로 표시", "완료 처리", "삭제해", "지워", "없애", "취소해", "수정해", "변경해", "목록 보여", "조회", "확인해줘"]
@@ -3082,6 +3367,7 @@ workflow.add_node("EMAIL_SEND_Node", email_send_node)
 workflow.add_node("EMAIL_SEARCH_Node", email_search_node)
 workflow.add_node("EMAIL_REPLY_Node", email_reply_node)
 workflow.add_node("EMAIL_READ_Node", email_read_node)
+workflow.add_node("EMAIL_MARK_READ_Node", email_mark_read_node)
 workflow.add_node("CALENDAR_WRITE_Node", calendar_write_node)
 workflow.add_node("CALENDAR_READ_Node", calendar_read_node)
 workflow.add_node("CALENDAR_RSVP_Node", calendar_rsvp_node)
@@ -3112,6 +3398,7 @@ INTENT_NODE_MAP = {
     "EMAIL_SEARCH": "EMAIL_SEARCH_Node",
     "EMAIL_REPLY": "EMAIL_REPLY_Node",
     "EMAIL_READ": "EMAIL_READ_Node",
+    "EMAIL_MARK_READ": "EMAIL_MARK_READ_Node",
     "CALENDAR_WRITE": "CALENDAR_WRITE_Node",
     "CALENDAR_READ": "CALENDAR_READ_Node",
     "CALENDAR_RSVP": "CALENDAR_RSVP_Node",
@@ -3131,7 +3418,7 @@ INTENT_NODE_MAP = {
 
 def route_after_supervisor(state: AgentState) -> Literal[
     "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
-    "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node",
+    "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node", "EMAIL_MARK_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
     "TASK_WRITE_Node", "TASK_READ_Node", "TASK_ACTION_Node",
@@ -3152,6 +3439,7 @@ workflow.add_conditional_edges(
         "EMAIL_SEARCH_Node": "EMAIL_SEARCH_Node",
         "EMAIL_REPLY_Node": "EMAIL_REPLY_Node",
         "EMAIL_READ_Node": "EMAIL_READ_Node",
+        "EMAIL_MARK_READ_Node": "EMAIL_MARK_READ_Node",
         "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
         "CALENDAR_RSVP_Node": "CALENDAR_RSVP_Node",
@@ -3174,7 +3462,7 @@ workflow.add_conditional_edges(
 # 액션 노드 완료 후 Dispatcher: pending_intents가 남아있으면 다음 노드로, 없으면 Aggregator로
 def route_after_dispatcher(state: AgentState) -> Literal[
     "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
-    "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node",
+    "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node", "EMAIL_MARK_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
     "TASK_WRITE_Node", "TASK_READ_Node", "TASK_ACTION_Node",
@@ -3195,6 +3483,7 @@ workflow.add_conditional_edges(
         "EMAIL_SEARCH_Node": "EMAIL_SEARCH_Node",
         "EMAIL_REPLY_Node": "EMAIL_REPLY_Node",
         "EMAIL_READ_Node": "EMAIL_READ_Node",
+        "EMAIL_MARK_READ_Node": "EMAIL_MARK_READ_Node",
         "CALENDAR_WRITE_Node": "CALENDAR_WRITE_Node",
         "CALENDAR_READ_Node": "CALENDAR_READ_Node",
         "CALENDAR_RSVP_Node": "CALENDAR_RSVP_Node",
@@ -3236,6 +3525,7 @@ workflow.add_edge("EMAIL_READ_Node", "Dispatcher")
 workflow.add_edge("EMAIL_SEND_Node", "Dispatcher")
 workflow.add_edge("EMAIL_SEARCH_Node", "Dispatcher")
 workflow.add_edge("EMAIL_REPLY_Node", "Dispatcher")
+workflow.add_edge("EMAIL_MARK_READ_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_WRITE_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_READ_Node", "Dispatcher")
 workflow.add_edge("CALENDAR_RSVP_Node", "Dispatcher")
