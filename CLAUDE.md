@@ -13,6 +13,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **GitHub**: https://github.com/looloojhi-hue/coway-ai-backend.git
 - **Branch**: `master` (default push/pull target)
 
+## Deployment Workflow (REQUIRED)
+
+**코드 변경 후 배포는 반드시 아래 순서를 따른다. 절대 순서를 건너뛰지 않는다.**
+
+```
+1. git add <변경된 파일>
+2. git commit -m "type: 설명"
+3. git push origin master
+4. gcloud run deploy coway-cobot-fullstack --source . --region asia-northeast3
+```
+
+커밋 메시지 타입 규칙:
+- `feat:` 새 기능 추가
+- `fix:` 버그 수정
+- `refactor:` 기능 변경 없는 구조 개선
+- `docs:` 문서 변경
+
+> 배포(`gcloud run deploy`)는 로컬 파일을 직접 업로드하므로 커밋 없이도 동작하지만,
+> GitHub과의 동기화를 위해 반드시 commit → push → deploy 순서를 지킨다.
+
 ## Commands
 
 ```bash
@@ -35,7 +55,7 @@ python document_parser.py
 # Install dependencies
 pip install -r requirements.txt
 
-# Deploy to Cloud Run
+# Deploy to Cloud Run (step 4 of workflow above)
 gcloud run deploy coway-cobot-fullstack --source . --region asia-northeast3
 ```
 
