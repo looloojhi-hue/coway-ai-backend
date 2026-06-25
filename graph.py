@@ -1282,13 +1282,16 @@ def email_read_node(state: AgentState):
 
         # 조회 조건 결정
         if "중요" in user_input:
-            q = 'is:important in:inbox'
+            # 최근 2주 필터: Gmail is:important는 날짜 무관 전체에서 가져오므로 제한 필요
+            q = 'is:important in:inbox newer_than:14d'
         elif "별표" in user_input or "starred" in user_input.lower():
-            q = 'is:starred in:inbox'
+            q = 'is:starred in:inbox newer_than:14d'
         else:
             q = 'is:unread in:inbox'
         if "오늘" in user_input:
-            q += ' newer_than:1d'
+            q = q.split('newer_than')[0].strip() + ' newer_than:1d'
+        elif "이번 주" in user_input or "이번주" in user_input:
+            q = q.split('newer_than')[0].strip() + ' newer_than:7d'
 
         results = gmail.users().messages().list(userId=user_email, q=q, maxResults=10).execute()
         messages = results.get('messages', [])
