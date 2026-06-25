@@ -347,17 +347,23 @@ def supervisor_node(state: AgentState):
     if isinstance(_email_candidates, list) and _email_candidates:
         _task_kw = any(kw in user_input for kw in ["task", "Task", "TASK", "할일", "할 일", "해야할", "등록", "추가", "넣어"])
         if _task_kw:
-            # 선택 번호 파싱
+            # 선택 번호 파싱 — "N번" 패턴 우선, "1, 2번" 같은 콤마 목록도 처리
+            # ⚠️ \b([1-9])\b 금지: 한국어 "번"은 \w라 경계 불일치 (4번 → 미감지)
             selected_nums = set()
-            if any(kw in user_input for kw in ["전부", "전체", "모두", "다 ", "다등록", "다추가"]):
+            if any(kw in user_input for kw in ["전부", "전체", "모두"]):
+                # "다 " 제거: "다 읽음으로"처럼 읽음처리 맥락의 "다"와 혼동 방지
                 selected_nums = set(c['num'] for c in _email_candidates)
             else:
-                for m in re.finditer(r'\b([1-9])\b', user_input):
+                # "N번" 직접 패턴
+                for m in re.finditer(r'([1-9])\s*번', user_input):
+                    selected_nums.add(int(m.group(1)))
+                # "1, 2번" 처럼 번 앞에 콤마로 나열된 숫자도 수집
+                for m in re.finditer(r'([1-9])\s*[,，]\s*(?=[1-9])', user_input):
                     selected_nums.add(int(m.group(1)))
 
             selected_emails = [c for c in _email_candidates if c['num'] in selected_nums]
             if selected_emails:
-                # 사용자 입력에서 마감일 추출
+                # 마감일 추출
                 due_match = re.search(r'마감일?\s*[:\s]*(\d{1,2})월\s*(\d{1,2})일', user_input)
                 user_due = ""
                 if due_match:
@@ -365,30 +371,44 @@ def supervisor_node(state: AgentState):
                     m_month, m_day = int(due_match.group(1)), int(due_match.group(2))
                     user_due = f"{now.year}-{m_month:02d}-{m_day:02d}"
 
-                print(f"✅ [Supervisor] 이메일→Task 등록 감지 ({len(selected_emails)}건) → TASK_WRITE 직행")
+                # 동일 메시지에 "읽음 처리"도 있으면 멀티 인텐트로 처리
+                _also_read_kw = any(kw in user_input for kw in ["읽음", "읽음 처리", "읽음으로"])
+                _pending = ["EMAIL_MARK_READ"] if _also_read_kw else []
+                _mark_nums = []  # 읽음 처리 번호 (빈 리스트 = 전체)
+                if _also_read_kw and not any(kw in user_input for kw in ["전부", "전체", "모두"]):
+                    for m in re.finditer(r'([1-9])\s*번', user_input):
+                        _mark_nums.append(int(m.group(1)))
+
+                # 맥락 유지: 일부만 선택했으면 candidates 보존 → 다음 턴에서 "5번도 등록해줘" 가능
+                _keep_candidates = _email_candidates if len(selected_emails) < len(_email_candidates) else []
+
+                print(f"✅ [Supervisor] 이메일→Task 등록 감지 ({len(selected_emails)}건) → TASK_WRITE 직행, pending={_pending}")
                 return {
                     "current_intent": "TASK_WRITE",
                     "top_intent": "TASK_WRITE",
-                    "pending_intents": [],
+                    "pending_intents": _pending,
                     "email_selected_for_task": selected_emails,
                     "email_task_override_due": user_due,
-                    "email_task_candidates": [],
+                    "email_task_candidates": _keep_candidates,
+                    "email_mark_read_nums": _mark_nums,
                     "bq_retry_count": 0, "bq_error_log": "",
                     "last_failed_intent": "", "last_error_type": "",
                     "fallback_suggested": False, "awaiting_fallback_query": "",
                     "sources": [],
                 }
 
-    # Pre-check B: 읽음 처리 요청 감지
+    # Pre-check B: 읽음 처리 요청 감지 (Task 등록 없이 읽음만 요청)
     _email_candidates_for_read = state.get("email_task_candidates")
     if isinstance(_email_candidates_for_read, list) and _email_candidates_for_read:
         _read_kw = any(kw in user_input for kw in ["읽음", "읽음 처리", "읽음으로", "읽었다", "확인 처리"])
         if _read_kw:
             mark_nums = []
-            if not any(kw in user_input for kw in ["전부", "전체", "모두", "다 ", "다 읽", "전체 읽"]):
-                for m in re.finditer(r'\b([1-9])\b', user_input):
+            _is_all_read = any(kw in user_input for kw in ["전부", "전체", "모두", "다 읽", "전체 읽", "다 처리"])
+            if not _is_all_read:
+                # "N번" 패턴만 사용 (\b 경계 금지)
+                for m in re.finditer(r'([1-9])\s*번', user_input):
                     mark_nums.append(int(m.group(1)))
-            print(f"✅ [Supervisor] 읽음 처리 감지 → EMAIL_MARK_READ 직행")
+            print(f"✅ [Supervisor] 읽음 처리 감지 (번호={mark_nums if mark_nums else '전체'}) → EMAIL_MARK_READ 직행")
             return {
                 "current_intent": "EMAIL_MARK_READ",
                 "top_intent": "EMAIL_MARK_READ",

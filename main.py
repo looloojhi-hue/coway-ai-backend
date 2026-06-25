@@ -25,11 +25,11 @@ db_fs = firestore.Client(project=PROJECT_ID)
 COLLECTION_NAME = "coway_chat_sessions"
 
 # ====================================================================
-# 🛡️ [워크스페이스 최소 권한 원칙] OAuth 2.0 스코프 선언
-# gmail.modify(과도한 권한) 배제 — 읽기 전용 + 초안 작성으로 분리
+# 🛡️ [워크스페이스 OAuth 2.0 스코프 선언]
+# gmail.modify: 읽음 처리(UNREAD 라벨 제거) 포함 — gmail.readonly를 대체
 # ====================================================================
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",      # 메일 요약 및 읽기, 검색
+    "https://www.googleapis.com/auth/gmail.modify",        # 메일 읽기, 검색, 읽음 처리(readonly 포함)
     "https://www.googleapis.com/auth/gmail.compose",       # 초안 작성
     "https://www.googleapis.com/auth/gmail.send",          # 메일 즉시 발송 및 회신
     "https://www.googleapis.com/auth/calendar",             # 캘린더 조회/등록/수정/삭제/RSVP
