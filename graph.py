@@ -1390,31 +1390,44 @@ def email_read_node(state: AgentState):
         )
         analyzed = EmailBriefingOutput(**json.loads(analysis_resp.text))
 
-        # Task 후보 구성 (message_id 포함)
-        task_candidates = []
-        for item in analyzed.items:
+        # 필터링 후 1~N으로 재번호 매기기
+        # (LLM이 원본 번호를 그대로 반환하면 1,2,3,7,8... 처럼 번호가 뛰어넘어 보임)
+        renumbered = []
+        for new_num, item in enumerate(analyzed.items, start=1):
             orig = next((e for e in raw_emails if e['num'] == item.num), None)
+            renumbered.append({
+                "new_num": new_num,
+                "item": item,
+                "message_id": orig['message_id'] if orig else "",
+            })
+
+        # Task 후보 구성 (재번호 기준)
+        task_candidates = []
+        for r in renumbered:
+            item = r["item"]
             task_candidates.append({
-                "num": item.num,
+                "num": r["new_num"],
                 "subject": item.subject,
                 "from_name": item.from_name,
                 "summary": item.brief_summary,
-                "message_id": orig['message_id'] if orig else "",
+                "message_id": r["message_id"],
                 "detected_due": item.detected_due_date,
             })
 
-        # 응답 본문 구성
-        lines = [f"📧 **메일 브리핑** ({len(analyzed.items)}건)\n"]
+        # 응답 본문 구성 (재번호 기준)
+        lines = [f"📧 **메일 브리핑** ({len(renumbered)}건)\n"]
         action_nums = []
-        for item in analyzed.items:
+        for r in renumbered:
+            item = r["item"]
+            new_num = r["new_num"]
             action_mark = " ⚡" if item.needs_action else ""
             due_line = f"\n   📅 마감일: {item.detected_due_date}" if item.detected_due_date else ""
             lines.append(
-                f"**[{item.num}] {item.from_name}님** — {item.subject}{action_mark}\n"
+                f"**[{new_num}] {item.from_name}님** — {item.subject}{action_mark}\n"
                 f"→ {item.brief_summary}{due_line}\n"
             )
             if item.needs_action:
-                action_nums.append(str(item.num))
+                action_nums.append(str(new_num))
 
         summary_text = "\n".join(lines)
 
