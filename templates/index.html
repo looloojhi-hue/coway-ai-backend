@@ -487,6 +487,8 @@
       "경조 휴가 및 경조금에 대해 알려줘"
     ];
     let currentPlaceholderIdx = 0;
+    let _placeholderTypingInterval = null;
+    let _placeholderRotateInterval  = null;
 
     renderBotGrid();
     lucide.createIcons();
@@ -520,7 +522,7 @@
       ]);
 
       rotatePlaceholder();
-      setInterval(rotatePlaceholder, 4500);
+      _placeholderRotateInterval = setInterval(rotatePlaceholder, 4500);
       if (window.lucide) lucide.createIcons();
     };
 
@@ -690,23 +692,44 @@
     function rotatePlaceholder() {
       const inputEl = document.getElementById('main-search-input');
       if (!inputEl) return;
-      
+
+      // 이전 타이핑 인터벌이 남아 있으면 반드시 제거 후 시작 (중첩 방지)
+      if (_placeholderTypingInterval) {
+        clearInterval(_placeholderTypingInterval);
+        _placeholderTypingInterval = null;
+      }
+
       let targetText = placeholderTemplates[currentPlaceholderIdx];
       let currentText = "";
       let letterIdx = 0;
-      inputEl.placeholder = ""; 
-      
-      const typeInterval = setInterval(() => {
+      inputEl.placeholder = "";
+
+      _placeholderTypingInterval = setInterval(() => {
         if (letterIdx < targetText.length) {
           currentText += targetText.charAt(letterIdx);
           inputEl.placeholder = currentText;
           letterIdx++;
         } else {
-          clearInterval(typeInterval);
+          clearInterval(_placeholderTypingInterval);
+          _placeholderTypingInterval = null;
           currentPlaceholderIdx = (currentPlaceholderIdx + 1) % placeholderTemplates.length;
         }
       }, 50);
     }
+
+    // 탭 전환 시 타이머 완전 정지 → 복귀 시 즉시 재개 (백그라운드 throttle 방지)
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (_placeholderTypingInterval)  { clearInterval(_placeholderTypingInterval);  _placeholderTypingInterval = null; }
+        if (_placeholderRotateInterval)  { clearInterval(_placeholderRotateInterval);  _placeholderRotateInterval = null; }
+      } else {
+        // 탭 복귀: 현재 텍스트를 즉시 완성 표시 후 다음 회차부터 타이핑 시작
+        const inputEl = document.getElementById('main-search-input');
+        if (inputEl) inputEl.placeholder = placeholderTemplates[currentPlaceholderIdx];
+        currentPlaceholderIdx = (currentPlaceholderIdx + 1) % placeholderTemplates.length;
+        _placeholderRotateInterval = setInterval(rotatePlaceholder, 4500);
+      }
+    });
 
     function fillCapabilityChip(promptText) {
       const mainInput = document.getElementById('main-search-input');
