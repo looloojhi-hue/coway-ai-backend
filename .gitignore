@@ -5,3 +5,9 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# 임시/미리보기 파일
+design-preview.html
+perf-report.html
+*-preview.html
+*-report.html

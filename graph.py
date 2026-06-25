@@ -1484,7 +1484,25 @@ def calendar_read_node(state: AgentState):
             schedule_text = "일정 조회 중 오류가 발생했습니다."
 
     person_label = f"{target_name}님의 " if target_name else ""
-    prompt = f"사용자 질문: {user_input}\n조회 범위: {person_label}{range_label}\n일정 데이터:\n{schedule_text}\n지시사항: 날짜·시간 기준으로 명확히 나열하고 상세내용 포함하여 요약하세요."
+
+    # 요일 LLM 직접 계산 금지 — Python으로 사전 주입
+    _days_ko = ["월", "화", "수", "목", "금", "토", "일"]
+    _rd_start = datetime.date(rng.startYear, rng.startMonth, rng.startDay)
+    _rd_end   = datetime.date(rng.endYear,   rng.endMonth,   rng.endDay)
+    _rd, _rd_lines = _rd_start, []
+    while _rd <= _rd_end:
+        _rd_lines.append(f"{_rd.month}월 {_rd.day}일={_days_ko[_rd.weekday()]}요일")
+        _rd += datetime.timedelta(days=1)
+    date_weekday_info = ", ".join(_rd_lines)
+
+    prompt = (
+        f"사용자 질문: {user_input}\n"
+        f"조회 범위: {person_label}{range_label}\n"
+        f"날짜-요일 정보(직접 계산 금지, 반드시 이 값만 사용): {date_weekday_info}\n"
+        f"일정 데이터:\n{schedule_text}\n"
+        f"지시사항: 날짜·시간·요일 기준으로 명확히 나열하고 상세내용 포함하여 요약하세요. "
+        f"날짜 표기 시 위 날짜-요일 정보에서 그대로 가져오세요."
+    )
     ai_response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt).text
     header = f"📅 **{target_name}님의 {range_label} 일정 브리핑**" if target_name else f"📅 **{range_label} 일정 브리핑**"
     return {
@@ -1542,7 +1560,8 @@ def calendar_write_node(state: AgentState):
 
             attendee_line = ""
             if attendee_emails:
-                attendee_display = attendee_names_raw or ', '.join(attendee_emails)
+                # attendee_names_raw가 이메일이면 display_name 우선 사용
+                attendee_display = selected_slot.get("attendee_display_name") or attendee_names_raw or ', '.join(attendee_emails)
                 attendee_line = f"\n- **초대된 참석자:** {attendee_display} (초대 메일 자동 발송)"
             print(f"✅ [CALENDAR_WRITE] 추천 슬롯 직행 등록 완료: {title} ({date_label})")
             return {
@@ -2227,7 +2246,9 @@ def calendar_free_node(state: AgentState):
         output = CalendarSuggestionsOutput(**json.loads(result.text))
         suggestions_data = {
             "slots": [s.model_dump() for s in output.suggestions],
-            "attendee_names": output.attendee_names or target_name,
+            # 이메일이 있으면 이메일 저장 → CALENDAR_WRITE에서 재검색 없이 직접 사용
+            "attendee_names": target_email if target_email else (output.attendee_names or ""),
+            "attendee_display_name": target_name if target_name else (output.attendee_names or ""),
             "original_request": effective_request,
         }
         header = (
