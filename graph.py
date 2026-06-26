@@ -1787,16 +1787,21 @@ def calendar_read_node(state: AgentState):
         else:
             for e in events:
                 start = e['start'].get('dateTime', e['start'].get('date', ''))
+                end   = e['end'].get('dateTime', e['end'].get('date', ''))
+                is_private = (e.get('visibility') == 'private') or not e.get('summary')
+                title = e.get('summary', '(비공개 일정)') if not is_private else '(비공개 일정)'
                 if 'T' in start:
-                    date_part = f"{int(start[5:7])}월 {int(start[8:10])}일"
-                    time_part = start[11:16]
-                    time_str = f"{date_part} {time_part}" if not is_single_day else time_part
+                    date_part  = f"{int(start[5:7])}월 {int(start[8:10])}일"
+                    start_time = start[11:16]
+                    end_time   = end[11:16] if 'T' in end else ''
+                    time_range = f"{start_time}~{end_time}" if end_time else start_time
+                    time_str   = f"{date_part} {time_range}" if not is_single_day else time_range
                 else:
                     date_part = f"{int(start[5:7])}월 {int(start[8:10])}일"
-                    time_str = f"{date_part} 종일" if not is_single_day else "종일"
-                desc = e.get('description', '')
+                    time_str  = f"{date_part} 종일" if not is_single_day else "종일"
+                desc = e.get('description', '') if not is_private else ''
                 desc_str = f"\n ↳ 상세내용: {desc}" if desc else ""
-                schedule_text += f"- {time_str} | {e.get('summary', '(제목 없음)')}{desc_str}\n"
+                schedule_text += f"- {time_str} | {title}{desc_str}\n"
     except Exception as e:
         if "AUTH_REQUIRED_FOR:" in str(e):
             raise
