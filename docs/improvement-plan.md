@@ -78,8 +78,8 @@
 ## Phase 3 — AI 에이전트 고도화 (Enhancement)
 
 ### P7. RAG 파이프라인 고도화
-**파일**: `graph.py`, `rag_node.py`  
-**상태**: `[ ]`
+**파일**: `graph.py`, `rag_node.py`, `main.py`  
+**상태**: `[x]`
 
 | # | 항목 | 설명 |
 |---|------|------|
@@ -118,3 +118,4 @@
 | 2026-06-30 | Phase 1 | P1·P2·P3 완료: Firestore/BQ 싱글턴, Model Armor 토큰 캐싱, Gmail 병렬 조회, 히스토리 비동기 처리 |
 | 2026-06-30 | Phase 2 | P4·P5 완료: Calendar KST 타임존 수정, OAuth expiry 저장, BQ ACL 5분 TTL 캐시, BQ SQL 생성 MODEL_NAME 격상 |
 | 2026-06-30 | Phase 2 | P6 완료: rag_retriever_node(구형 Discovery Engine) 삭제, rag_refiner_node 보존 (P7에서 연결 예정) |
+| 2026-06-30 | Phase 3 | P7 완료: rag_refiner_node 그래프 연결(Refiner→Search→Reasoner), main.py 중복 메시지 제거(현재 질문만 전달), _expand_query LLM 동적 확장으로 교체 |

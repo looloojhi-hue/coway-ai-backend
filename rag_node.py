@@ -13,6 +13,7 @@ TABLE_ID = "knowledge_master"
 bq_client = bigquery.Client(project=PROJECT_ID)
 # 💡 [리전 실측 복구] 프로님의 필드 테스트에서 완벽히 검증된 "us" 멀티 리전 엔드포인트 고정!
 ai_client = genai.Client(vertexai=True, project=PROJECT_ID, location="us")
+LITE_MODEL = "gemini-3.1-flash-lite"
 
 # =====================================================================
 # 🧠 1단계: 사용자 질문을 벡터로 변환 (Embedding)
@@ -49,16 +50,37 @@ def is_broad_query(query: str) -> bool:
     return any(pattern in query for pattern in _BROAD_QUERY_PATTERNS)
 
 def _expand_query(user_query: str) -> str | None:
-    """광범위 쿼리에 대해 보조 검색 쿼리를 반환합니다. 특정 쿼리는 None 반환."""
-    pairs = [
+    """광범위 쿼리에 대해 LLM으로 보조 검색 쿼리를 동적 생성합니다. 실패 시 하드코딩 폴백."""
+    _fallback_pairs = [
         ('복리후생 제도', '코웨이 복리후생 규정 전체'),
         ('복리후생 규정', '코웨이 복리후생 제도 안내'),
         ('복리후생', '복지포인트 경조사 휴가 지원'),
         ('출장 규정', '출장비 여비 지급 기준'),
         ('휴가 제도', '연차 특별휴가 출산휴가'),
     ]
+    try:
+        from google.genai import types as _types
+        import json as _json
+        prompt = f"""다음 질문에 대해 사내 규정 문서 검색에 사용할 보조 검색어를 1개 생성하세요.
+원문 질문과 다른 관점의 유사어/확장어를 사용해 검색 커버리지를 넓히는 것이 목표입니다.
+JSON 형식으로만 답하세요: {{"expansion": "검색어"}}
+
+질문: {user_query}"""
+        response = ai_client.models.generate_content(
+            model=LITE_MODEL,
+            contents=prompt,
+            config=_types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        result = _json.loads(response.text)
+        expansion = result.get("expansion", "").strip()
+        if expansion and expansion != user_query:
+            print(f"🔀 [RAG Expand] LLM 확장 쿼리: '{expansion}'")
+            return expansion
+    except Exception as e:
+        print(f"⚠️ [RAG Expand] LLM 확장 실패, 폴백 사용: {e}")
+
     q = user_query.replace('알려줘', '').replace('설명해줘', '').replace('정리해줘', '').strip()
-    for keyword, expansion in pairs:
+    for keyword, expansion in _fallback_pairs:
         if keyword in q:
             return expansion
     return None

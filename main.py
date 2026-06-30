@@ -286,12 +286,9 @@ async def chat_endpoint(payload: ChatRequest, request: Request,
     
     session_id = payload.sessionId if payload.sessionId and payload.sessionId != "default_session" else f"session_{user_email.split('@')[0]}_default"
     
-    messages_list = []
-    if payload.lastQ:
-        messages_list.append(HumanMessage(content=payload.lastQ))
-    if payload.lastA:
-        messages_list.append(AIMessage(content=payload.lastA))
-    messages_list.append(HumanMessage(content=payload.current))
+    # LangGraph Firestore 체크포인터가 이전 대화 히스토리를 자동으로 복원하므로
+    # 현재 질문만 전달 — 중복 메시지 적재 방지
+    messages_list = [HumanMessage(content=payload.current)]
 
     initial_state = {
         "messages": messages_list,

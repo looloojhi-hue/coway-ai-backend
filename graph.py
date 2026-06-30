@@ -631,52 +631,61 @@ def supervisor_node(state: AgentState):
 
 def rag_refiner_node(state: AgentState):
     print("🔍 [RAG Refiner] 이전 대화 맥락까지 고려하여 검색어 정제 중...")
-    
+
     chat_history = ""
     for msg in state["messages"]:
         role = "사용자" if msg.type == "human" else "챗봇"
         chat_history += f"{role}: {msg.content}\n"
-    
-    prompt = f"""
+
+    original_query = get_last_human_input(state)
+
+    try:
+        prompt = f"""
     당신은 코웨이 전사 사내 규정 검색을 위한 검색어 최적화 AI 전문가입니다.
     below의 [대화 기록]을 읽고, 사용자가 '가장 마지막에 한 질문'의 진짜 의도를 파악하세요.
 
     [💡 코웨이 전용 약어/동의어 사전]
     - 지타워, g타워, G-Tower -> 본사
-    - 런웨이 -> Leanway(학습 시스템 LMS) 
+    - 런웨이 -> Leanway(학습 시스템 LMS)
     - 회갑 -> 환갑
-    ※ 지침: 임직원들이 위와 같은 사내 줄임말이나 약어를 쓰더라도, 사규 문서에 실재할 법한 공식 표준 명칭으로 LLM 상식을 활용해 치환하여 분석하세요. 
-    
+    ※ 지침: 임직원들이 위와 같은 사내 줄임말이나 약어를 쓰더라도, 사규 문서에 실재할 법한 공식 표준 명칭으로 LLM 상식을 활용해 치환하여 분석하세요.
+
     [대화 기록]
     {chat_history}
-    
+
     [지시사항]
-    위 대화 맥락과 코웨이 약어 사전을 융합하여, 마지막 사용자 질문을 Vertex AI Search 엔진이 튕겨내지 않고 가장 잘 매칭할 수 있는 핵심 명사구 단 '하나'의 검색어로 출력하세요. (쉼표 금지, '방법', '절차', '시기', '언제' 같은 무의미한 단어는 원천 제외할 것)
+    위 대화 맥락과 코웨이 약어 사전을 융합하여, 마지막 사용자 질문을 BigQuery 벡터 검색에서 가장 잘 검색될 수 있는 핵심 명사구 단 '하나'의 검색어로 출력하세요. (쉼표 금지, '방법', '절차', '시기', '언제' 같은 무의미한 단어는 원천 제외할 것)
     """
-    
-    response = ai_client.models.generate_content(
-        model=LITE_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=RefinedQuery,
-        ),
-    )
-    result_data = json.loads(response.text)
-    print(f"✅ [RAG Refiner] 정제된 키워드: {result_data.get('query')}")
-    return {"refined_query": result_data.get("query")}
+
+        response = ai_client.models.generate_content(
+            model=LITE_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=RefinedQuery,
+            ),
+        )
+        result_data = json.loads(response.text)
+        refined = (result_data.get("query") or "").strip() or original_query
+        print(f"✅ [RAG Refiner] 정제된 키워드: {refined}")
+        return {"refined_query": refined}
+    except Exception as e:
+        print(f"⚠️ [RAG Refiner] 정제 실패, 원문 폴백: {e}")
+        return {"refined_query": original_query}
 
 def rag_search_node(state: AgentState):
     print("\n🔍 [RAG Search] 빅쿼리 고성능 하이브리드 검색 및 권한(ACL) 실시간 검증 가동...")
     from rag_node import hybrid_search_bq, is_broad_query
 
     user_input = get_last_human_input(state)
+    # rag_refiner_node가 대화 맥락 기반으로 정제한 검색어를 우선 사용
+    search_query = state.get("refined_query") or user_input
     user_email = state["user_info"].get("email", "employee_all@coway.com")
 
     # 광범위 질문("알려줘", "정리해줘" 등)은 더 많은 문서를 검색해 누락 방지
-    top_k = 8 if is_broad_query(user_input) else 5
-    print(f"📊 [RAG] 쿼리 유형: {'광범위' if top_k == 8 else '핀포인트'} → top_k={top_k}")
-    context_text, top_dept_code = hybrid_search_bq(user_input, user_email, top_k=top_k)
+    top_k = 8 if is_broad_query(search_query) else 5
+    print(f"📊 [RAG] 쿼리 유형: {'광범위' if top_k == 8 else '핀포인트'} → top_k={top_k}, 검색어: '{search_query}'")
+    context_text, top_dept_code = hybrid_search_bq(search_query, user_email, top_k=top_k)
     
     if not context_text:
         context_text = "시스템에 등록된 사내 규정이나 관련 문서를 찾을 수 없거나, 해당 문서를 열람할 권한이 없습니다."
@@ -3440,6 +3449,7 @@ workflow = StateGraph(AgentState)
 workflow.add_node("Supervisor", supervisor_node)
 workflow.add_node("Dispatcher", dispatcher_node)
 workflow.add_node("Aggregator_Node", aggregator_node)
+workflow.add_node("RAG_Refiner_Node", rag_refiner_node)
 workflow.add_node("RAG_Search_Node", rag_search_node)
 workflow.add_node("Reasoner", reasoner_node)
 workflow.add_node("GENERAL_Node", general_node)
@@ -3473,7 +3483,7 @@ workflow.add_node("DOCS_CREATE_Node", docs_create_node)
 workflow.add_edge(START, "Supervisor")
 
 INTENT_NODE_MAP = {
-    "RAG": "RAG_Search_Node",
+    "RAG": "RAG_Refiner_Node",
     "BQ": "BQ_Node",
     "GENERAL": "GENERAL_Node",
     "EMAIL_WRITE": "EMAIL_WRITE_Node",
@@ -3500,7 +3510,7 @@ INTENT_NODE_MAP = {
 }
 
 def route_after_supervisor(state: AgentState) -> Literal[
-    "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
+    "RAG_Refiner_Node", "BQ_Node", "GENERAL_Node",
     "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node", "EMAIL_MARK_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
@@ -3514,7 +3524,7 @@ workflow.add_conditional_edges(
     "Supervisor",
     route_after_supervisor,
     {
-        "RAG_Search_Node": "RAG_Search_Node",
+        "RAG_Refiner_Node": "RAG_Refiner_Node",
         "BQ_Node": "BQ_Node",
         "GENERAL_Node": "GENERAL_Node",
         "EMAIL_WRITE_Node": "EMAIL_WRITE_Node",
@@ -3544,7 +3554,7 @@ workflow.add_conditional_edges(
 
 # 액션 노드 완료 후 Dispatcher: pending_intents가 남아있으면 다음 노드로, 없으면 Aggregator로
 def route_after_dispatcher(state: AgentState) -> Literal[
-    "RAG_Search_Node", "BQ_Node", "GENERAL_Node",
+    "RAG_Refiner_Node", "BQ_Node", "GENERAL_Node",
     "EMAIL_WRITE_Node", "EMAIL_SEND_Node", "EMAIL_SEARCH_Node", "EMAIL_REPLY_Node", "EMAIL_READ_Node", "EMAIL_MARK_READ_Node",
     "CALENDAR_WRITE_Node", "CALENDAR_READ_Node", "CALENDAR_RSVP_Node",
     "CALENDAR_UPDATE_Node", "CALENDAR_DELETE_Node", "CALENDAR_FREE_Node",
@@ -3558,7 +3568,7 @@ workflow.add_conditional_edges(
     "Dispatcher",
     route_after_dispatcher,
     {
-        "RAG_Search_Node": "RAG_Search_Node",
+        "RAG_Refiner_Node": "RAG_Refiner_Node",
         "BQ_Node": "BQ_Node",
         "GENERAL_Node": "GENERAL_Node",
         "EMAIL_WRITE_Node": "EMAIL_WRITE_Node",
@@ -3597,7 +3607,8 @@ workflow.add_conditional_edges(
 )
 workflow.add_edge("BQ_Corrector_Node", "BQ_Node")
 
-# RAG 체인: Search → Reasoner → Dispatcher
+# RAG 체인: Refiner → Search → Reasoner → Dispatcher
+workflow.add_edge("RAG_Refiner_Node", "RAG_Search_Node")
 workflow.add_edge("RAG_Search_Node", "Reasoner")
 workflow.add_edge("Reasoner", "Dispatcher")
 
