@@ -40,6 +40,9 @@ ai_client = genai.Client(
 # 빅쿼리 클라이언트
 bq_client = bigquery.Client(project=PROJECT_ID)
 
+# Firestore 클라이언트 — 모듈 레벨 싱글턴 (get_workspace_service 등 전역 재사용)
+_fs_client = firestore.Client(project=PROJECT_ID)
+
 # BQ 접근 권한 체크 대상 데이터셋 (공유 권한 설정된 데이터셋들)
 _BQ_PROTECTED_DATASETS = ["hrga_travel_data", "hrga_cost_data"]
 
@@ -67,11 +70,21 @@ def check_bq_access(user_email: str) -> bool:
 MODEL_ARMOR_LOCATION = "asia-northeast3"  # 👈 서울 리전 타격 고정
 MODEL_ARMOR_TEMPLATE_URI = f"projects/{PROJECT_ID}/locations/{MODEL_ARMOR_LOCATION}/templates/coway-chatbot-template"
 
-# 📡 2026 오피셜 구글 가이드에 따른 Model Armor 전용 로우 레벨 API 호출 클라이언트 장전
+# Model Armor 인증 토큰 캐시 — 만료 60초 전에 갱신, 그 외엔 재사용
+import time as _time
+_armor_token_cache: dict = {"token": None, "expires_at": 0.0}
+
 def get_model_armor_headers():
+    if _time.time() < _armor_token_cache["expires_at"] - 60:
+        return {
+            "Authorization": f"Bearer {_armor_token_cache['token']}",
+            "Content-Type": "application/json"
+        }
     creds, _ = google.auth.default()
     auth_req = google.auth.transport.requests.Request()
     creds.refresh(auth_req)
+    _armor_token_cache["token"] = creds.token
+    _armor_token_cache["expires_at"] = _time.time() + 3600
     return {
         "Authorization": f"Bearer {creds.token}",
         "Content-Type": "application/json"
@@ -256,7 +269,7 @@ def get_workspace_service(service_name: str, version: str, user_email: str):
     임직원이 자발적으로 승인해준 Firestore 내부 'user_tokens' 보관함에서 
     개별 Refresh Token을 실시간으로 꺼내와 만료 시 자동 갱신(Hydration)하며 호출합니다.
     """
-    db_fs_local = firestore.Client(project=PROJECT_ID)
+    db_fs_local = _fs_client
     token_ref = db_fs_local.collection("user_tokens").document(user_email).get()
     
     if not token_ref.exists:
@@ -1307,24 +1320,31 @@ def email_read_node(state: AgentState):
                 "email_unread_ids": [],
             }
 
-        # 메일 메타데이터 수집
-        raw_emails = []
-        unread_ids = []
-        for idx, msg_info in enumerate(messages):
-            msg = gmail.users().messages().get(
+        # 메일 메타데이터 병렬 수집
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _fetch_msg(msg_info):
+            return gmail.users().messages().get(
                 userId=user_email, id=msg_info['id'],
                 format='metadata', metadataHeaders=['From', 'Subject']
             ).execute()
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            fetched_msgs = list(executor.map(_fetch_msg, messages))
+
+        raw_emails = []
+        unread_ids = []
+        for idx, msg in enumerate(fetched_msgs):
             headers = msg.get('payload', {}).get('headers', [])
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
             sender_raw = next((h['value'] for h in headers if h['name'] == 'From'), '알수없음')
             sender = sender_raw.split('<')[0].strip().strip('"')
             snippet = msg.get('snippet', '')
             if 'UNREAD' in msg.get('labelIds', []):
-                unread_ids.append(msg_info['id'])
+                unread_ids.append(messages[idx]['id'])
             raw_emails.append({
                 "num": idx + 1,
-                "message_id": msg_info['id'],
+                "message_id": messages[idx]['id'],
                 "subject": subject,
                 "from_name": sender,
                 "snippet": snippet,
@@ -3641,9 +3661,9 @@ def log_to_analytics_v2(payload: dict, ai_response: str, response_status: str, i
     DATASET_ID = "chatbot_analytics"
     TABLE_ID = "query_analytics_v2"
     
-    bq_client_logger = bigquery.Client(project=PROJECT_ID)
+    bq_client_logger = bq_client
     table_ref = bq_client_logger.dataset(DATASET_ID).table(TABLE_ID)
-    
+
     try:
         bq_client_logger.get_table(table_ref)
     except Exception:

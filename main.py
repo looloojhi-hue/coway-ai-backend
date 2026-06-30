@@ -5,7 +5,7 @@ import json
 import re
 import urllib.parse
 import requests as http_requests
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -230,8 +230,58 @@ def extract_structured_payload(text: str, tag: str):
             
     return collected_payload, clean_text.strip()
 
+def _save_history_background(session_id: str, user_email: str, intent: str,
+                              current_msg: str, answer: str,
+                              source_results: list, extracted_links: str,
+                              parsed_chart_data):
+    """Firestore 히스토리 저장 — BackgroundTasks에서 실행되므로 응답 반환에 영향 없음."""
+    try:
+        doc_ref = db_fs.collection(COLLECTION_NAME).document(session_id)
+        doc = doc_ref.get()
+        short_title = current_msg[:25] + "..." if len(current_msg) > 25 else current_msg
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        new_history_payload = [
+            {"role": "user",      "content": current_msg, "timestamp": now},
+            {"role": "assistant", "content": answer, "timestamp": now,
+             "results": source_results, "links": extracted_links, "chartData": parsed_chart_data},
+        ]
+        if doc.exists:
+            doc_ref.update({
+                "title": short_title,
+                "badge_type": intent,
+                "messages": firestore.ArrayUnion(new_history_payload),
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            })
+        else:
+            user_sessions = (
+                db_fs.collection(COLLECTION_NAME)
+                .where("user_email", "==", user_email)
+                .order_by("updated_at", direction=firestore.Query.DESCENDING)
+                .get()
+            )
+            if len(user_sessions) >= 6:
+                for old_doc in reversed(user_sessions):
+                    if not old_doc.to_dict().get("is_pinned", False):
+                        db_fs.collection(COLLECTION_NAME).document(old_doc.id).delete()
+                        print(f"🗑️ [선입선출 청소] 6개 초과 삭제: {old_doc.id}")
+                        break
+            doc_ref.set({
+                "user_email": user_email,
+                "title": short_title,
+                "badge_type": intent,
+                "is_pinned": False,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+                "messages": new_history_payload,
+            })
+        print(f"📊 [Firestore] 히스토리 적재 완료 (세션: {session_id})")
+    except Exception as fs_err:
+        print(f"⚠️ [Firestore] 히스토리 적재 실패: {fs_err}")
+
+
 @app.post("/api/chat")
-async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str = Depends(get_iap_user_email)):
+async def chat_endpoint(payload: ChatRequest, request: Request,
+                        background_tasks: BackgroundTasks,
+                        user_email: str = Depends(get_iap_user_email)):
     print(f"\n📥 [API 수신] 사용자 질문: {payload.current} (세션 계정: {user_email})")
     
     session_id = payload.sessionId if payload.sessionId and payload.sessionId != "default_session" else f"session_{user_email.split('@')[0]}_default"
@@ -366,77 +416,33 @@ async def chat_endpoint(payload: ChatRequest, request: Request, user_email: str 
         "user_info": {"name": user_email.split('@')[0]}
     }
 
-    try:
-        log_to_analytics_v2(
-            payload=log_payload,
-            ai_response=clean_answer_body,
-            response_status=response_status,
-            intent=intent,
-            top_dept_code=final_state.get("top_dept_code", "분류 불가"),
-            user_agent=user_agent_str
-        )
-    except Exception as log_err:
-        print(f"⚠️ [RPA 무중단 방어] 실시간 빅쿼리 V2 로깅 중 오류 발생: {log_err}")
-
     extracted_links = final_state.get("links", "[]")
     if not extracted_links or extracted_links == "[]":
         if source_results:
             synchronized_link_list = [{"title": s.get("doc_name", "바로가기"), "url": s.get("links", "#")} for s in source_results if s.get("links")]
             extracted_links = json.dumps(synchronized_link_list, ensure_ascii=False)
 
-    # 파이어스토어 히스토리 적재 — coway_chat_sessions 컬렉션 (history/list, history/detail API가 읽는 경로)
-    try:
-        doc_ref = db_fs.collection(COLLECTION_NAME).document(session_id)
-        doc = doc_ref.get()
-
-        short_title = payload.current[:25] + "..." if len(payload.current) > 25 else payload.current
-        new_history_payload = [
-            {
-                "role": "user",
-                "content": payload.current,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-            },
-            {
-                "role": "assistant",
-                "content": clean_answer_body,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "results": source_results,
-                "links": extracted_links,
-                "chartData": parsed_chart_data
-            }
-        ]
-
-        if doc.exists:
-            doc_ref.update({
-                "title": short_title,
-                "badge_type": intent,
-                "messages": firestore.ArrayUnion(new_history_payload),
-                "updated_at": firestore.SERVER_TIMESTAMP
-            })
-        else:
-            # 6슬롯 초과 시 가장 오래된 비핀 세션 삭제
-            user_sessions = db_fs.collection(COLLECTION_NAME)\
-                                 .where("user_email", "==", user_email)\
-                                 .order_by("updated_at", direction=firestore.Query.DESCENDING)\
-                                 .get()
-            if len(user_sessions) >= 6:
-                for old_doc in reversed(user_sessions):
-                    if not old_doc.to_dict().get("is_pinned", False):
-                        db_fs.collection(COLLECTION_NAME).document(old_doc.id).delete()
-                        print(f"🗑️ [선입선출 청소] 6개 초과 삭제: {old_doc.id}")
-                        break
-
-            doc_ref.set({
-                "user_email": user_email,
-                "title": short_title,
-                "badge_type": intent,
-                "is_pinned": False,
-                "updated_at": firestore.SERVER_TIMESTAMP,
-                "messages": new_history_payload
-            })
-        print(f"📊 [Firestore] 히스토리 적재 완료 (세션: {session_id})")
-    except Exception as fs_err:
-        print(f"⚠️ [Firestore] 히스토리 적재 실패: {fs_err}")
+    # BQ 로깅 + Firestore 히스토리 저장 — 응답 반환 후 백그라운드에서 처리
+    background_tasks.add_task(
+        log_to_analytics_v2,
+        payload=log_payload,
+        ai_response=clean_answer_body,
+        response_status=response_status,
+        intent=intent,
+        top_dept_code=final_state.get("top_dept_code", "분류 불가"),
+        user_agent=user_agent_str,
+    )
+    background_tasks.add_task(
+        _save_history_background,
+        session_id=session_id,
+        user_email=user_email,
+        intent=intent,
+        current_msg=payload.current,
+        answer=clean_answer_body,
+        source_results=source_results,
+        extracted_links=extracted_links,
+        parsed_chart_data=parsed_chart_data,
+    )
 
     return {
         "summary": { "summaryText": clean_answer_body },
