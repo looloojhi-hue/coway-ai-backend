@@ -66,7 +66,7 @@
 
 ### P6. Dead Code 정리 및 RAG Refiner 재활성화 준비
 **파일**: `graph.py`  
-**상태**: `[ ]`
+**상태**: `[x]`
 
 | # | 항목 | 위치 | 설명 |
 |---|------|------|------|
@@ -117,3 +117,4 @@
 | 2026-06-30 | — | 계획서 최초 작성 |
 | 2026-06-30 | Phase 1 | P1·P2·P3 완료: Firestore/BQ 싱글턴, Model Armor 토큰 캐싱, Gmail 병렬 조회, 히스토리 비동기 처리 |
 | 2026-06-30 | Phase 2 | P4·P5 완료: Calendar KST 타임존 수정, OAuth expiry 저장, BQ ACL 5분 TTL 캐시, BQ SQL 생성 MODEL_NAME 격상 |
+| 2026-06-30 | Phase 2 | P6 완료: rag_retriever_node(구형 Discovery Engine) 삭제, rag_refiner_node 보존 (P7에서 연결 예정) |

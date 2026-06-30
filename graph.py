@@ -666,46 +666,6 @@ def rag_refiner_node(state: AgentState):
     print(f"✅ [RAG Refiner] 정제된 키워드: {result_data.get('query')}")
     return {"refined_query": result_data.get("query")}
 
-def rag_retriever_node(state: AgentState):
-    query = state["refined_query"]
-    print(f"📚 [RAG Retriever] '{query}'(으)로 구형 데이터 앱 직접 호출 중...")
-    
-    creds, _ = google.auth.default()
-    auth_req = google.auth.transport.requests.Request()
-    creds.refresh(auth_req)
-    
-    OLD_PROJECT_NUMBER = "81027032834"
-    APP_ID = "coway-ai-chatbot_1766022708310"
-    url = f"https://discoveryengine.googleapis.com/v1alpha/projects/{OLD_PROJECT_NUMBER}/locations/global/collections/default_collection/engines/{APP_ID}/servingConfigs/default_search:search"
-    
-    headers = {
-        "Authorization": f"Bearer {creds.token}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "query": query,
-        "pageSize": 3
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code == 200:
-        data = response.json()
-        results = data.get("results", [])
-        if results:
-            doc_contents = ""
-            for i, res in enumerate(results):
-                doc_data = res.get("document", {})
-                snippet = doc_data.get("derivedStructData", {}).get("snippets", [{}])[0].get("snippet", "내용 없음")
-                link = doc_data.get("derivedStructData", {}).get("link", "링크 없음")
-                doc_contents += f"[문서 {i+1} 원본링크: {link}]\n{snippet}\n\n"
-            
-            print(f"✅ [RAG Retriever] 규정 문서 {len(results)}개 및 출처 링크 확보 완료!")
-            return {"retrieved_docs": doc_contents}
-            
-    print("❌ [RAG Retriever] 검색된 문서가 없습니다.")
-    return {"retrieved_docs": "관련 규정 문서를 찾을 수 없습니다."}
-
 def rag_search_node(state: AgentState):
     print("\n🔍 [RAG Search] 빅쿼리 고성능 하이브리드 검색 및 권한(ACL) 실시간 검증 가동...")
     from rag_node import hybrid_search_bq, is_broad_query
