@@ -598,10 +598,12 @@ async def google_oauth2_callback_gateway(request: Request):
         if "error" in token_data:
             raise Exception(f"토큰 교환 실패: {token_data.get('error')} — {token_data.get('error_description', '')}")
 
-        db_fs_local = firestore.Client(project=PROJECT_ID)
-        db_fs_local.collection("user_tokens").document(user_email).set({
+        _expires_in = token_data.get("expires_in", 3600)
+        _expiry = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=_expires_in)).isoformat()
+        db_fs.collection("user_tokens").document(user_email).set({
             "access_token": token_data.get("access_token"),
             "refresh_token": token_data.get("refresh_token"),
+            "token_expiry": _expiry,
             "client_id": GOOGLE_OAUTH_CLIENT_ID,
             "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
             "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

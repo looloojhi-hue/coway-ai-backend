@@ -46,20 +46,29 @@ _fs_client = firestore.Client(project=PROJECT_ID)
 # BQ 접근 권한 체크 대상 데이터셋 (공유 권한 설정된 데이터셋들)
 _BQ_PROTECTED_DATASETS = ["hrga_travel_data", "hrga_cost_data"]
 
+# check_bq_access 결과 캐시: {email: (result: bool, expires_at: float)}
+_BQ_ACL_CACHE: dict = {}
+_BQ_ACL_TTL = 300  # 5분
+
 def check_bq_access(user_email: str) -> bool:
     """
     GCP BQ 데이터셋의 공유(ACL) 설정을 직접 읽어 요청 사용자의 접근 권한을 확인.
-    서비스 계정은 ACL 조회 권한만 사용하며, 실제 BQ 쿼리 실행 전에 호출됨.
-    GCP 콘솔의 데이터셋 공유 권한이 단일 소스 오브 트루스로 작동함.
+    결과는 5분간 캐싱하여 반복 네트워크 조회를 방지한다.
     """
+    import time as _t
+    cached = _BQ_ACL_CACHE.get(user_email)
+    if cached and _t.time() < cached[1]:
+        return cached[0]
     try:
         for dataset_id in _BQ_PROTECTED_DATASETS:
             dataset = bq_client.get_dataset(f"{PROJECT_ID}.{dataset_id}")
             for entry in dataset.access_entries:
                 if entry.entity_type == "userByEmail" and entry.entity_id == user_email:
                     print(f"✅ [BQ ACL] {user_email} → {dataset_id} 접근 허용 (role: {entry.role})")
+                    _BQ_ACL_CACHE[user_email] = (True, _t.time() + _BQ_ACL_TTL)
                     return True
         print(f"🚫 [BQ ACL] {user_email} → 보호된 데이터셋에 권한 없음")
+        _BQ_ACL_CACHE[user_email] = (False, _t.time() + _BQ_ACL_TTL)
         return False
     except Exception as e:
         print(f"⚠️ [BQ ACL] 권한 체크 중 오류 — 안전을 위해 거부: {e}")
@@ -1011,7 +1020,7 @@ def bq_node(state: AgentState):
         print(f"♻️ [BQ] 교정된 SQL 재사용 (재시도 #{state.get('bq_retry_count', 0)}):\n{generated_sql}")
     else:
         sql_response = ai_client.models.generate_content(
-            model=LITE_MODEL,
+            model=MODEL_NAME,
             contents=[{"role": "system", "parts": [{"text": system_message}]}, {"role": "user", "parts": [{"text": user_input}]}]
         ).text
         generated_sql = sql_response.replace("```sql", "").replace("```", "").strip()
@@ -1232,7 +1241,7 @@ def bq_corrector_node(state: AgentState):
     위 에러 로그를 분석하여 에러의 원인을 완전히 제거한 '완벽하게 수정된 표준 BigQuery SQL'을 재창조하세요.
     앞뒤에 ```sql 같은 코드블록 기호는 일절 제외하고 오직 순수 교정 SQL문만 사출하세요.
     """
-    response = ai_client.models.generate_content(model=LITE_MODEL, contents=prompt)
+    response = ai_client.models.generate_content(model=MODEL_NAME, contents=prompt)
     corrected_sql = response.text.replace("```sql", "").replace("```", "").strip()
     print(f"♻️ [BQ Corrector] 교정 완료된 신규 SQL 사출 (시도 카운트: {retry_cnt}/2)")
     
@@ -1780,10 +1789,11 @@ def calendar_read_node(state: AgentState):
             endYear=now.year, endMonth=now.month, endDay=now.day,
         )
 
+    _KST = datetime.timezone(datetime.timedelta(hours=9))
     time_min = datetime.datetime(rng.startYear, rng.startMonth, rng.startDay, 0, 0, 0,
-                                  tzinfo=datetime.timezone.utc).isoformat()
+                                  tzinfo=_KST).isoformat()
     time_max = datetime.datetime(rng.endYear, rng.endMonth, rng.endDay, 23, 59, 59,
-                                  tzinfo=datetime.timezone.utc).isoformat()
+                                  tzinfo=_KST).isoformat()
     is_single_day = (rng.startYear == rng.endYear and rng.startMonth == rng.endMonth and rng.startDay == rng.endDay)
     if is_single_day:
         range_label = f"{rng.startMonth}월 {rng.startDay}일"
