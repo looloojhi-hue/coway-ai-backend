@@ -74,7 +74,8 @@ def create_bq_vector_table_if_not_exists():
         bigquery.SchemaField("embedding", "FLOAT64", mode="REPEATED"), 
         bigquery.SchemaField("dept_code", "STRING", mode="NULLABLE"),  
         bigquery.SchemaField("allowed_groups", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("links", "STRING", mode="NULLABLE") # 👈 [Phase 4] 다이내믹 링크 압축 장부방 개설!
+        bigquery.SchemaField("links", "STRING", mode="NULLABLE"), # 👈 [Phase 4] 다이내믹 링크 압축 장부방 개설!
+        bigquery.SchemaField("images", "STRING", mode="NULLABLE") # 👈 [P11] 다이내믹 이미지 URL 압축 장부방 개설!
     ]
     
     try:
@@ -128,7 +129,7 @@ def direct_load_rows_to_bq(rows_to_insert, file_id):
 # 📊 구글 스프레드시트 정밀 행(Row) 해체 가공 엔진 (FAQ 장부 특화)
 # =====================================================================
 def process_spreadsheet_scenario(file_id, doc_name, doc_url, last_modified, csv_content_stream, dept_code, allowed_group):
-    """📊 구글 스프레드시트 정밀 행(Row) 해체 가공 엔진 (FAQ 장부 특화 + [Phase 4] 유동적 멀티 링크 자동 파싱 엔진 탑재)"""
+    """📊 구글 스프레드시트 정밀 행(Row) 해체 가공 엔진 (FAQ 장부 특화 + [Phase 4] 유동적 멀티 링크/이미지 자동 파싱 엔진 탑재)"""
     f = io.StringIO(csv_content_stream)
     reader = csv.DictReader(f)
     
@@ -159,20 +160,35 @@ def process_spreadsheet_scenario(file_id, doc_name, doc_url, last_modified, csv_
         
         # 🎯 [Phase 4 핵심 알고리즘] 유동적 '링크' 컬럼 무제한 자동 추적 엔진
         dynamic_links = []
-        
-        # 링크 1번부터 최대 20번 세트까지 컬럼이 뒤로 확장되어도 자동으로 감지하는 유연 루프
+        # 🖼️ [P11 확장] 유동적 '이미지' 컬럼 무제한 자동 추적 엔진 (동일 패턴 재사용)
+        dynamic_images = []
+
+        # 링크/이미지 1번부터 최대 20번 세트까지 컬럼이 뒤로 확장되어도 자동으로 감지하는 유연 루프
         for i in range(1, 21):
             k_ln, l_name = find_column_value_and_key(row, [f"링크{i}이름", f"link{i}name"])
             k_lu, l_url = find_column_value_and_key(row, [f"링크{i}url", f"링크{i}주소", f"링크{i}링크", f"link{i}url"])
-            
+
             if k_ln: mapped_keys.add(k_ln)
             if k_lu: mapped_keys.add(k_lu)
-            
+
             # 🔗 데이터가 존재하는 경우에만 링크 배열에 동적 안착
             if l_name or l_url:
                 dynamic_links.append({
                     "title": l_name if l_name else "참고 링크",
                     "url": l_url if l_url else "#"
+                })
+
+            k_in, i_name = find_column_value_and_key(row, [f"이미지{i}이름", f"사진{i}이름", f"image{i}name", f"img{i}name"])
+            k_iu, i_url = find_column_value_and_key(row, [f"이미지{i}url", f"이미지{i}주소", f"이미지{i}링크", f"사진{i}url", f"image{i}url", f"img{i}url"])
+
+            if k_in: mapped_keys.add(k_in)
+            if k_iu: mapped_keys.add(k_iu)
+
+            # 🖼️ 데이터가 존재하는 경우에만 이미지 배열에 동적 안착
+            if i_name or i_url:
+                dynamic_images.append({
+                    "title": i_name if i_name else "참고 이미지",
+                    "url": i_url if i_url else "#"
                 })
 
         # LLM 임베딩 및 검색용 컨텍스트 텍스트 청크 포맷팅
@@ -189,7 +205,13 @@ def process_spreadsheet_scenario(file_id, doc_name, doc_url, last_modified, csv_
             formatted_chunk += "\n[연관 참고 링크 정보]\n"
             for link in dynamic_links:
                 formatted_chunk += f"- {link['title']}: {link['url']}\n"
-            
+
+        # 가독성을 위해 본문 텍스트 스트림 내부에도 수집된 이미지 링크 임베딩
+        if dynamic_images:
+            formatted_chunk += "\n[연관 참고 이미지 정보]\n"
+            for img in dynamic_images:
+                formatted_chunk += f"- {img['title']}: {img['url']}\n"
+
         extra_text = ""
         for k, v in row.items():
             if k and k not in mapped_keys and v and v.strip():
@@ -200,20 +222,22 @@ def process_spreadsheet_scenario(file_id, doc_name, doc_url, last_modified, csv_
             
         text_chunks.append(formatted_chunk)
 
-        # 🌟 [Generative UI 레일] 수집된 링크 객체를 JSON 스트링으로 직렬화 (없으면 빈 배열 '[]' 저장)
+        # 🌟 [Generative UI 레일] 수집된 링크/이미지 객체를 JSON 스트링으로 직렬화 (없으면 빈 배열 '[]' 저장)
         links_json_str = json.dumps(dynamic_links, ensure_ascii=False)
+        images_json_str = json.dumps(dynamic_images, ensure_ascii=False)
 
         rows_to_insert.append({
-            "chunk_id": str(uuid.uuid4()), 
-            "file_id": file_id, 
-            "doc_name": doc_name, 
-            "doc_url": doc_url,  
-            "last_modified": last_modified, 
-            "content": formatted_chunk, 
+            "chunk_id": str(uuid.uuid4()),
+            "file_id": file_id,
+            "doc_name": doc_name,
+            "doc_url": doc_url,
+            "last_modified": last_modified,
+            "content": formatted_chunk,
             "embedding": None, # 아래에서 배치 할당
-            "dept_code": dept_code, 
+            "dept_code": dept_code,
             "allowed_groups": allowed_group,
-            "links": links_json_str # 👈 확장된 빅쿼리 룸에 완벽 매립
+            "links": links_json_str, # 👈 확장된 빅쿼리 룸에 완벽 매립
+            "images": images_json_str # 👈 [P11] 이미지 URL 배열 매립
         })
 
     if not text_chunks: return
@@ -247,6 +271,9 @@ def traverse_and_sync(folder_id, parent_dept_code, allowed_group, drive_service,
             
             current_dept_code = parent_dept_code
             if item_mime == 'application/vnd.google-apps.folder':
+                # 🖼️ [P11 경로 분리] '공식이미지' 폴더는 시트 URL 수동 연동 전용 자산 창고 — 지식베이스 문서 스캔 대상에서 제외 (11-C 자동 처리와의 중복 노출 방지)
+                if item_name.strip() == "공식이미지":
+                    continue
                 if item_name.endswith("팀") or item_name.endswith("TF") or "팀 " in item_name:
                     current_dept_code = item_name.strip()
                 traverse_and_sync(item_id, current_dept_code, allowed_group, drive_service, bq_meta_map, active_drive_ids)
