@@ -394,7 +394,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request,
                 source_results.append({
                     "doc_name": ps.get("doc_name") or ps.get("name") or "참조 문서",
                     "doc_url": d_url,
-                    "links": ps.get("links") or ""
+                    "links": ps.get("links") or "",
+                    "images": ps.get("images") or []
                 })
 
     # top_intent: Supervisor 최초 분류값 (Dispatcher가 "__DONE__"으로 덮어쓴 current_intent 대신 사용)

@@ -104,6 +104,44 @@
 
 ---
 
+## Phase 4 — 기능 확장 (Feature)
+
+### P10. Google Calendar 회의실 예약 연동
+**파일**: `graph.py` (`calendar_free_node`, `calendar_write_node`), `main.py`  
+**상태**: `[ ]` — IT팀 회의실 리소스 이메일 목록(CSV) 수령 대기 중
+
+**배경**: 사용자가 챗봇에서 "다음주 화요일 오후 2시 6인 회의실 잡아줘" 요청 시 가용 회의실 조회 + 캘린더 예약까지 원스톱 처리
+
+| # | 항목 | 설명 |
+|---|------|------|
+| 10-A | 회의실 목록 등록 | IT팀 CSV 수령 후 Firestore `meeting_rooms` 컬렉션 또는 `graph.py` 상수 `MEETING_ROOMS`로 등록 (이름·이메일·층·수용인원) |
+| 10-B | `calendar_free_node` 회의실 가용성 조회 | 사용자 지정 시간대에 `freebusy.query`로 회의실 목록 동시 조회 → 비어있는 회의실 필터링 후 안내 |
+| 10-C | `calendar_write_node` 회의실 예약 | 사용자 선택 회의실 이메일을 `attendees`에 추가하여 이벤트 생성 → 회의실 자동 예약 |
+| 10-D | Supervisor 라우팅 보강 | "회의실 잡아줘" 등 키워드에서 `CALENDAR_FREE` 정확 라우팅 확인 및 프롬프트 보강 |
+
+**선행 조건**: IT팀으로부터 `c_xxx@resource.calendar.google.com` 형태의 회의실 리소스 이메일 목록 수령
+
+---
+
+### P11. 이미지 표시 기능 (RAG 응답 내 인라인 이미지)
+**파일**: `embed_and_load.py`, `rag_node.py`, `graph.py` (`reasoner_node`), `main.py`, `templates/index.html`  
+**상태**: `[→]` — 11-A/B/D/E/F 완료 (시트 수동 연동 경로), 11-C(이미지 파일 자동 처리)는 보류
+
+**배경**: 현재 텍스트+링크만 반환되는 답변에 이미지를 인라인으로 표시하여 직관적인 정보 전달. 부서 담당자가 각 부서 폴더의 "공식이미지" 서브폴더에 이미지를 올리고 URL을 FAQ 시트에 붙여넣으면 관련 질문 답변 시 이미지가 함께 표시됨
+
+| # | 항목 | 파일 | 설명 | 상태 |
+|---|------|------|------|------|
+| 11-A | BigQuery 스키마 변경 | BigQuery / `embed_and_load.py` | `knowledge_master`에 `images STRING`(JSON 배열) 컬럼 추가. 단일 `image_url` 대신 `links` 컬럼과 동일한 다중 이미지 구조로 설계 | `[x]` |
+| 11-B | Sheets `이미지N_이름`/`이미지N_URL` 동적 파싱 | `embed_and_load.py` | 기존 `링크1~20` 동적 감지 엔진과 동일한 패턴으로 `이미지1~20` 세트 자동 감지 → `images` 컬럼에 JSON 직렬화. "공식이미지" 폴더는 문서 스캔에서 제외(11-C와 경로 분리, 폴더 내 안내 텍스트 파일 오염 방지) | `[x]` |
+| 11-C | 이미지 파일 직접 처리 | `embed_and_load.py` | `.jpg/.png/.gif/.webp` 파일 감지 → Gemini Vision으로 설명 생성 → 벡터화, Drive 공유 URL 저장 | `[ ]` 보류 — 11-B(시트 수동 연동)와 동일 폴더 사용 시 중복 노출 위험, 폴더 분리 규칙 확정 후 재착수 |
+| 11-D | RAG 검색 결과에 `images` 포함 | `rag_node.py` | `hybrid_search_bq` SELECT에 `images` 컬럼 추가, 문서 블록에 `[이미지목록]: {JSON}` 필드로 반환 | `[x]` |
+| 11-E | `main.py` 응답 JSON에 `images` 포함 | `graph.py`(`reasoner_node`), `main.py` | 블록에서 `[이미지목록]` 정규식 추출·JSON 파싱 후 소스카드(`extracted_sources`)에 `images` 배열로 병합, `main.py`는 그대로 pass-through | `[x]` |
+| 11-F | 프론트엔드 소스카드 이미지 렌더링 | `index.html` | `images` 배열 있을 때 소스카드 하단에 썸네일 `<img>` 다건 인라인 렌더링 (클릭 시 원본 열기) | `[x]` |
+
+**구현 순서(실제)**: 11-A → 11-B → 11-D → 11-E → 11-F (11-C는 폴더 분리 정책 미확정으로 보류)
+
+---
+
 ## 변경 이력
 
 | 날짜 | Phase | 내용 |
@@ -114,3 +152,6 @@
 | 2026-06-30 | Phase 2 | P6 완료: rag_retriever_node(구형 Discovery Engine) 삭제, rag_refiner_node 보존 (P7에서 연결 예정) |
 | 2026-06-30 | Phase 3 | P7 완료: rag_refiner_node 그래프 연결(Refiner→Search→Reasoner), main.py 중복 메시지 제거(현재 질문만 전달), _expand_query LLM 동적 확장으로 교체 |
 | 2026-07-01 | Phase 3 | P8 완료: Supervisor 최근 2턴 히스토리 라우팅 컨텍스트(P8-A), Context Cache 인프라 + system_instruction 분리(P8-B). P9 SSE 스트리밍 구축 범위 제외 |
+| 2026-07-01 | Phase 4 | P10 등록: Google Calendar 회의실 예약 연동 — IT팀 CSV 수령 대기 중 |
+| 2026-07-01 | Phase 4 | P11 등록: 이미지 표시 기능 — 사용자·부서 요구사항 기반, 설계 완료 |
+| 2026-07-01 | Phase 4 | P11-A/B/D/E/F 완료: BQ `images` 컬럼(JSON 배열), 시트 `이미지N` 동적 파싱, RAG→Reasoner→소스카드 이미지 파이프라인 연결, 소스카드 썸네일 렌더링. "공식이미지" 폴더 문서 스캔 제외 처리로 안내 텍스트 오염 방지. 11-C(자동 이미지 처리)는 보류 |

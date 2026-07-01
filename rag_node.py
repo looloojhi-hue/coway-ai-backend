@@ -113,12 +113,13 @@ def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 6) -> tuple:
         )
     )
     -- 2. 하이브리드 리랭킹 (의미 점수 + 정확한 키워드가 있으면 가산점 부여)
-    SELECT 
-        doc_name, 
-        doc_url, 
-        content, 
+    SELECT
+        doc_name,
+        doc_url,
+        content,
         last_modified,
         dept_code,
+        images,
         distance,
         # 핵심 키워드가 마크다운 본문에 있으면 0.15점 보너스 부여
         IF(REGEXP_CONTAINS(content, @core_keyword), 0.15, 0) AS keyword_boost,
@@ -155,6 +156,7 @@ def hybrid_search_bq(user_query: str, user_email: str, top_k: int = 6) -> tuple:
             f"[담당부서]: {row.dept_code}\n"
             f"[최종수정일]: {row.last_modified}\n"
             f"[문서URL]: {row.doc_url}\n"
+            f"[이미지목록]: {row.images if row.images else '[]'}\n"
             f"[상세 내용]:\n{row.content}\n"
         )
         retrieved_docs.append(doc_info)

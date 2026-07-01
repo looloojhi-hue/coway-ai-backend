@@ -900,11 +900,23 @@ def reasoner_node(state: AgentState):
     for block in (re.split(r'\n\n---\n\n', docs) if docs else []):
         name_m = re.search(r'^\[문서명\]:\s*(.+)', block, re.MULTILINE)
         url_m  = re.search(r'^\[문서URL\]:\s*(https?://\S+)', block, re.MULTILINE)
+        img_m  = re.search(r'^\[이미지목록\]:\s*(.+)', block, re.MULTILINE)
         if name_m and url_m:
             n, u = name_m.group(1).strip(), url_m.group(1).strip()
+            images = []
+            if img_m:
+                try:
+                    images = json.loads(img_m.group(1).strip())
+                except Exception:
+                    images = []
             if u not in [s.get('doc_url') for s in extracted_sources]:
-                extracted_sources.append({"doc_name": n, "doc_url": u, "links": ""})
+                extracted_sources.append({"doc_name": n, "doc_url": u, "links": "", "images": images})
                 valid_blocks.append(block)
+            elif images:
+                # 같은 문서의 다른 청크에 이미지가 있으면 기존 소스카드에 병합
+                existing = next(s for s in extracted_sources if s.get('doc_url') == u)
+                existing_urls = {img.get('url') for img in existing.get('images', [])}
+                existing.setdefault('images', []).extend(img for img in images if img.get('url') not in existing_urls)
             # 같은 URL 중복: 소스카드 하나이므로 valid_blocks에도 추가하지 않음
         # URL 없는 블록: LLM 번호 부여 목록에서 제외 → 인용번호 생성 불가
 
@@ -912,15 +924,15 @@ def reasoner_node(state: AgentState):
     if docs and not extracted_sources:
         for url in re.findall(r'원본링크:\s*(https?://[^\s\]\n]+)', docs):
             if url not in [s.get('doc_url') for s in extracted_sources]:
-                extracted_sources.append({"doc_name": "사내 규정 지식 파일", "doc_url": url.strip(), "links": ""})
+                extracted_sources.append({"doc_name": "사내 규정 지식 파일", "doc_url": url.strip(), "links": "", "images": []})
         for name, url in re.findall(r'\[((?:\[[^\]]*\]|[^\]\n])+)\]\((https?://[^\s)]+)\)', docs):
             if url not in [s.get('doc_url') for s in extracted_sources]:
                 clean_name = name.replace("원본링크:", "").replace("출처:", "").strip()
-                extracted_sources.append({"doc_name": clean_name, "doc_url": url.strip(), "links": ""})
+                extracted_sources.append({"doc_name": clean_name, "doc_url": url.strip(), "links": "", "images": []})
         if not extracted_sources:
             for idx, url in enumerate(re.findall(r'(https?://[^\s\n\)]+)', docs)):
                 if url not in [s.get('doc_url') for s in extracted_sources]:
-                    extracted_sources.append({"doc_name": f"참고 사규 지침서 {idx+1}", "doc_url": url.strip(), "links": ""})
+                    extracted_sources.append({"doc_name": f"참고 사규 지침서 {idx+1}", "doc_url": url.strip(), "links": "", "images": []})
 
     # 번호 부여: 소스카드와 1:1 대응하는 블록만 → num_docs = 소스카드 수와 정확히 일치
     num_docs = len(valid_blocks) if valid_blocks else len(extracted_sources)

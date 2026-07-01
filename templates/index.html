@@ -1121,7 +1121,7 @@
       let combinedResults = [];
       if (sourceConfigs && sourceConfigs.length > 0) {
         sourceConfigs.forEach(item => {
-          combinedResults.push({ doc_name: item.doc_name, doc_url: item.doc_url, links: item.links });
+          combinedResults.push({ doc_name: item.doc_name, doc_url: item.doc_url, links: item.links, images: item.images || [] });
         });
       }
       if (targetResults && targetResults.length > 0) {
@@ -1130,7 +1130,7 @@
           const dName = item.doc_name || item.name || "";
           // URL 기준으로만 중복 제거 (이름이 달라도 같은 문서면 스킵)
           if (!combinedResults.some(c => c.doc_url === dUrl)) {
-            combinedResults.push({ doc_name: dName, doc_url: dUrl, links: item.links || "" });
+            combinedResults.push({ doc_name: dName, doc_url: dUrl, links: item.links || "", images: item.images || [] });
           }
         });
       }
@@ -1149,7 +1149,7 @@
               }
             } else {
               if (!normalizedSources.some(s => s.link === url)) {
-                normalizedSources.push({ title: name, link: url });
+                normalizedSources.push({ title: name, link: url, images: item.images || [] });
               }
             }
           }
@@ -1178,6 +1178,20 @@
         let cardsHtml = '';
         normalizedSources.forEach((item, index) => {
           const idx = index + 1;
+          let imagesHtml = '';
+          if (item.images && item.images.length > 0) {
+            const thumbs = item.images
+              .filter(img => img.url && img.url !== '#')
+              .map(img => `
+                <a href="${img.url}" target="_blank" class="block shrink-0">
+                  <img src="${img.url}" alt="${img.title || '참고 이미지'}" loading="lazy"
+                       class="w-20 h-20 object-cover rounded-lg border border-[#C7D7FC] hover:opacity-80 transition-opacity"
+                       onerror="this.parentElement.style.display='none'">
+                </a>`).join('');
+            if (thumbs) {
+              imagesHtml = `<div class="flex gap-2 mt-3 overflow-x-auto pb-1">${thumbs}</div>`;
+            }
+          }
           cardsHtml += `
             <div id="doc-card-${msgId}-${idx}" class="p-4 bg-[#F5F8FF] border border-[#C7D7FC] shadow-sm rounded-xl transition-all hover:border-[#1A56DB] hover:shadow-md">
               <div class="flex justify-between items-start mb-1.5">
@@ -1187,6 +1201,7 @@
                 </a>
               </div>
               <h4 class="font-bold text-sm text-slate-800 leading-snug">${item.title}</h4>
+              ${imagesHtml}
             </div>`;
         });
         
