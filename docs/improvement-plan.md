@@ -89,24 +89,18 @@
 ---
 
 ### P8. 에이전트 품질 고도화
-**파일**: `graph.py`, `main.py`  
-**상태**: `[ ]`
+**파일**: `graph.py`  
+**상태**: `[x]`
 
 | # | 항목 | 설명 |
 |---|------|------|
-| 8-A | 멀티턴 컨텍스트 강화 | `main.py` ChatRequest에 최근 3–5턴 전달, Supervisor 라우팅 정확도 향상 |
-| 8-B | Supervisor 프롬프트 Context Caching | 고정 분류 규칙 부분 Gemini Context Caching API 적용, 토큰 비용 절감 |
+| 8-A | Supervisor 멀티턴 컨텍스트 강화 | Supervisor에서 최근 2턴(4개 메시지) 이력 참고 → "복직 후에는?" 같은 후속 질문 RAG 라우팅 정확도 향상 |
+| 8-B | Supervisor Context Caching | `_SUPERVISOR_SYSTEM_INSTRUCTION` 고정 규칙 모듈 레벨 상수화 + `_get_supervisor_cache()` 인프라 구축. Cache 활성 시 cached_content 사용, 미달(4,096 토큰 기준) 시 `system_instruction` 파라미터 폴백 |
 
 ---
 
 ### P9. SSE 스트리밍 도입
-**파일**: `main.py`, `templates/index.html`  
-**상태**: `[ ]`
-
-| # | 항목 | 설명 |
-|---|------|------|
-| 9-A | FastAPI StreamingResponse 적용 | `GENERAL` / `RAG` 노드부터 단계적 적용 |
-| 9-B | 프론트엔드 SSE 수신 처리 | `index.html` fetch → EventSource 전환 |
+**상태**: `[제외]` — 도표 렌더링(ApexCharts), 소스카드 등 구조화 응답과 충돌. 일반 텍스트 출력 형태가 사용자 UX에 맞지 않아 롤백 경험이 있어 구축 범위에서 제외.
 
 ---
 
@@ -119,3 +113,4 @@
 | 2026-06-30 | Phase 2 | P4·P5 완료: Calendar KST 타임존 수정, OAuth expiry 저장, BQ ACL 5분 TTL 캐시, BQ SQL 생성 MODEL_NAME 격상 |
 | 2026-06-30 | Phase 2 | P6 완료: rag_retriever_node(구형 Discovery Engine) 삭제, rag_refiner_node 보존 (P7에서 연결 예정) |
 | 2026-06-30 | Phase 3 | P7 완료: rag_refiner_node 그래프 연결(Refiner→Search→Reasoner), main.py 중복 메시지 제거(현재 질문만 전달), _expand_query LLM 동적 확장으로 교체 |
+| 2026-07-01 | Phase 3 | P8 완료: Supervisor 최근 2턴 히스토리 라우팅 컨텍스트(P8-A), Context Cache 인프라 + system_instruction 분리(P8-B). P9 SSE 스트리밍 구축 범위 제외 |

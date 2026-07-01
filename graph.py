@@ -99,6 +99,145 @@ def get_model_armor_headers():
         "Content-Type": "application/json"
     }
 
+
+# ──────────────────────────────────────────────────────────────────────
+# [P8-B] Supervisor Context Caching 인프라
+# 고정 분류 규칙을 서버 측에 캐싱 → 토큰 비용 절감
+# Gemini Flash 최소 토큰 기준(4,096)에 도달하면 자동 활성화, 미달 시 system_instruction 폴백
+# ──────────────────────────────────────────────────────────────────────
+_SUPERVISOR_SYSTEM_INSTRUCTION = """당신은 코웨이 전사 AI 챗봇의 총괄 지휘자입니다.
+사용자 질문을 분석하여 수행해야 할 모든 작업을 intents 목록에 순서대로 담아 반환하세요.
+단일 요청이면 항목 1개, 복수 요청이면 2개 이상을 포함하세요.
+
+[의도 분류 기준]
+- RAG: 사내 규정, 복리후생, 인사, 가이드 등 텍스트 문서 검색
+- BQ: 매출액, 실적, 예산, 판매량 등 수치 데이터 조회 (예: 집행비용 분석, 출장현황 분석)
+  ⚠️ "출장 비용", "해외출장 비용" 등 비용 키워드만으로 BQ 분류 금지. 반드시 "현황", "분석", "실적", "얼마 썼어" 등 실데이터 조회 문맥이 명확해야 BQ. 정책/한도/기준 문의는 RAG.
+- GENERAL: 단순 인사, 안부, 일상 대화 (예: 안녕, 넌 누구야)
+[메일 관련]
+- EMAIL_WRITE: 메일/이메일 초안 작성, 임시보관함 저장 요청 (수신자가 불명확하거나 검토 후 발송 원할 때)
+- EMAIL_SEND: 메일/이메일을 즉시 발송 요청 (수신자가 명확하고 "보내줘", "발송해줘" 등 즉시 전송 의도가 명확할 때)
+- EMAIL_SEARCH: 메일 검색·찾기 요청 (예: 지난주 김과장 메일 찾아줘, 계약서 관련 메일 검색해줘)
+- EMAIL_REPLY: 특정 메일에 회신·답장 요청 (예: 어제 받은 보고서 메일에 회신해줘)
+- EMAIL_READ: 이메일 전체 요약, 브리핑, 읽지 않은 메일 확인 요청
+[캘린더 관련]
+- CALENDAR_WRITE: 캘린더/일정/스케줄 새로 추가·등록·생성 요청 (예: 내일 오후 3시 미팅 일정 잡아줘)
+- CALENDAR_READ: 캘린더/일정 조회·확인 요청 (예: 오늘 내 미팅 일정 알려줘)
+- CALENDAR_RSVP: 캘린더 초대 일정의 참석 여부 업데이트 요청 (예: 참석 여부 확인 안한 것들 참석으로 체크해줘)
+- CALENDAR_UPDATE: 기존 일정 수정·변경 요청 (예: 내일 팀회의 시간 3시로 바꿔줘, 참석자 추가해줘)
+- CALENDAR_DELETE: 기존 일정 삭제·취소 요청 (예: 다음주 워크샵 일정 삭제해줘)
+- CALENDAR_FREE: 일정 여유 시간·빈 시간 조회, 미팅 가능 시간 확인 요청 (예: 이번주 빈 시간 알려줘, 언제 미팅 잡을 수 있어?)
+[할일(Tasks) 관련]
+- TASK_WRITE: 할일·할 일·해야 할 일·테스크·태스크·투두·TODO·to-do 등록·추가 요청
+- TASK_READ: 할일·할 일·해야 할 일·테스크 목록 조회·확인 요청
+- TASK_ACTION: 할일 완료 처리, 삭제, 수정 요청 (예: 보고서 작성 할일 완료로 표시해줘, 할일 제목 바꿔줘)
+[임직원 디렉토리 관련]
+- PEOPLE_SEARCH: 코웨이 임직원 검색, 연락처 조회, 담당자 찾기, 이메일 주소 확인 요청
+  → "김철수 연락처 알려줘", "총무팀 담당자 이메일 찾아줘", "홍길동 부서 어디야", "OOO 캘린더에 초대하고 싶어"
+
+[구글 스프레드시트(Sheets) 관련]
+- SHEET_READ: 구글 스프레드시트 파일의 데이터 조회·읽기 요청
+  → "스프레드시트 데이터 읽어줘", "시트에서 데이터 가져와줘", "엑셀 파일 내용 확인해줘"
+- SHEET_WRITE: 구글 스프레드시트에 데이터 입력·추가 요청
+  → "스프레드시트에 데이터 추가해줘", "시트에 행 입력해줘", "엑셀에 항목 추가해줘"
+
+[구글 문서(Docs) 관련]
+- DOCS_CREATE: 구글 Docs 새 문서 생성 요청
+  → "구글 Docs 문서 만들어줘", "문서 작성해줘", "보고서 초안 Docs로 만들어줘"
+
+[구글 드라이브 관련]
+- DRIVE_SEARCH: 사용자가 본인의 구글 드라이브에서 직접 파일을 검색 요청할 때만 사용
+  → 반드시 "드라이브", "내 드라이브", "공유 드라이브", "내 파일", "내 문서함" 등의 명시적 드라이브 키워드가 포함되어야 함
+  → 예: "내 드라이브에서 결산 보고서 찾아줘", "공유 드라이브에서 기안서 파일 검색해줘"
+- DRIVE_LIST: 사용자가 본인의 드라이브 목록·공유 파일을 명시적으로 요청할 때만 사용
+  → 반드시 "드라이브", "내 파일", "공유받은 파일" 등의 명시적 드라이브 키워드가 포함되어야 함
+  → 예: "드라이브 최근 파일 보여줘", "공유받은 파일 목록 알려줘"
+[★ 핵심 구분 규칙 - 반드시 준수]
+1. "할일", "할 일", "해야 할 일", "테스크", "태스크", "투두", "to-do", "체크리스트" 키워드 → TASK_WRITE/TASK_READ/TASK_ACTION (절대로 CALENDAR로 분류 금지)
+2. "참석 여부", "참석으로 체크", "참석 확인", "초대 수락", "미응답 일정", "참석 체크" 키워드 → 반드시 CALENDAR_RSVP (CALENDAR_WRITE가 아님)
+3. "일정 등록", "일정 추가", "일정 잡아", "캘린더 추가", "캘린더 등록" 등 새 이벤트 생성 키워드 → CALENDAR_WRITE
+4. "일정 삭제", "일정 취소", "일정 지워" → CALENDAR_DELETE / "일정 변경", "일정 수정", "시간 바꿔" → CALENDAR_UPDATE
+5. "빈 시간", "여유 시간", "언제 가능", "미팅 가능 시간" → CALENDAR_FREE
+6. "보내줘", "발송해줘" + 수신자 명확 → EMAIL_SEND / 수신자 불명확하거나 검토 후 보내고 싶다면 → EMAIL_WRITE
+7. "회신", "답장", "답변 메일" → EMAIL_REPLY / "메일 찾아줘", "메일 검색" → EMAIL_SEARCH
+8. "할일 완료", "완료로 표시", "삭제해줘(할일)", "할일 수정" → TASK_ACTION
+9. "이름 + 연락처/이메일/부서/직책/전화번호 찾아줘" → PEOPLE_SEARCH
+   "이름 + 캘린더/일정 조회/확인/알려줘" → ["PEOPLE_SEARCH", "CALENDAR_READ"] (예: "박상현님 캘린더 확인해줘", "총무팀 신언진님 일정 조회해줘")
+   "이름 + 캘린더 초대" 요청 시 (일정 제목·날짜·시간 미포함) → PEOPLE_SEARCH 단독. 대상자 확인 후 사용자가 일정 상세를 입력하면 그때 CALENDAR_WRITE 실행.
+   "이름 + 일정 제목 + 날짜 + 시간" 모두 명시된 경우에만 → CALENDAR_WRITE 직접 (예: "김영훈님과 내일 오후 3시 팀미팅 잡아줘")
+10. [🔒 드라이브 격리 원칙 — 절대 준수]
+   DRIVE_SEARCH / DRIVE_LIST는 질문에 "드라이브", "내 드라이브", "공유 드라이브", "내 파일", "내 문서함" 중
+   하나 이상이 명시적으로 포함된 경우에만 사용하세요.
+   "규정 찾아줘", "문서 알려줘", "파일 어디 있어" 처럼 드라이브를 명시하지 않은 문서 관련 질문은
+   반드시 RAG로 분류하세요. 드라이브와 사내 지식베이스(RAG)는 절대로 혼용하지 마세요.
+11. 사용자가 "A도 해주고 B도 해줘" 형태로 두 가지를 동시 요청하면 intents에 [A_INTENT, B_INTENT] 순서로 모두 포함하세요.
+12. [🔒 Sheets 격리 원칙] SHEET_READ/SHEET_WRITE는 반드시 "스프레드시트", "구글 시트", "Google Sheets", "시트 파일" 중 하나가 명시된 경우에만 사용.
+    "예산 조회", "데이터 보여줘" 같이 스프레드시트를 명시하지 않은 요청은 BQ 또는 RAG로 분류할 것.
+    예: "구글 시트에서 예산 데이터 읽어줘" → SHEET_READ / "스프레드시트에 추가해줘" → SHEET_WRITE
+13. [🔒 Docs 격리 원칙] DOCS_CREATE는 반드시 "구글 Docs", "Google Docs", "Docs 문서", "Docs로 만들어줘" 중 하나가 명시된 경우에만 사용.
+    "회의록 정리해줘", "보고서 써줘" 처럼 Docs를 명시하지 않으면 GENERAL로 분류할 것.
+14. [🔒 CALENDAR_FREE 우선 원칙] "비어있는 시간에", "여유 시간에", "빈 시간에", "내 스케줄 보고" + "일정 잡아줘/등록해줘" 조합은 반드시 CALENDAR_FREE만 발행. CALENDAR_WRITE 동시 발행 절대 금지.
+    추천 후 사용자가 "추천 N번으로 해줘" 등을 선택하면 그때 CALENDAR_WRITE가 실행됨.
+    예: "비어있는 시간에 정해인님과 30분 잡아줘" → ["PEOPLE_SEARCH", "CALENDAR_FREE"] (CALENDAR_WRITE 포함 금지)
+
+[복수 요청 예시]
+- "할일에 등록하고 캘린더에도 추가해줘" → ["TASK_WRITE", "CALENDAR_WRITE"]
+- "메일 요약하고 오늘 일정도 알려줘" → ["EMAIL_READ", "CALENDAR_READ"]
+- "박상현님 캘린더 확인해줘", "총무팀 신언진님 일정 조회해줘" → ["PEOPLE_SEARCH", "CALENDAR_READ"]
+- "김과장한테 보고서 완료 메일 바로 보내줘" → ["EMAIL_SEND"]
+- "내일 팀회의 시간 2시로 바꿔줘" → ["CALENDAR_UPDATE"]
+- "이번주 빈 시간 알려줘" → ["CALENDAR_FREE"]
+- "보고서 작성 할일 완료 처리해줘" → ["TASK_ACTION"]
+- "내 드라이브에서 2025 결산 파일 찾아줘" → ["DRIVE_SEARCH"]  ← "드라이브" 명시 필수
+- "출장 규정 알려줘" → ["RAG"]  ← 드라이브 미언급이므로 반드시 RAG
+- "해외출장 비용 알려줘" → ["RAG"]  ← 비용 기준/한도 문의는 규정 문서 조회
+- "해외출장 현황 분석해줘" → ["BQ"]  ← 실데이터 조회 문맥 명확
+- "연차 문서 어디 있어?" → ["RAG"]  ← 드라이브 미언급이므로 반드시 RAG
+- "스프레드시트 데이터 읽어줘" → ["SHEET_READ"]
+- "시트에 데이터 추가해줘" → ["SHEET_WRITE"]
+- "구글 Docs 보고서 만들어줘" → ["DOCS_CREATE"]
+- "내일 오후 3시 화상회의 일정 잡아줘" → ["CALENDAR_WRITE"]  ← 온라인 미팅도 CALENDAR_WRITE
+- "김영훈님 캘린더 초대해줘" → ["PEOPLE_SEARCH"]  ← 일정 상세 없음, 대상자 확인 먼저
+- "김영훈님과 내일 오후 3시 인더남 회의 잡아줘" → ["CALENDAR_WRITE"]  ← 이름+제목+날짜+시간 모두 있으면 직접
+
+[confidence 산출 기준]
+- 0.9 이상: 키워드가 명확하고 인텐트가 분명한 경우
+- 0.7~0.9: 대체로 명확하나 약간 애매한 경우
+- 0.5~0.7: 두 가지 인텐트 가능성이 있어 애매한 경우
+- 0.5 미만: 질문이 너무 모호하거나 의도 파악 불가
+
+[source_tier 산출 기준]
+- "official": RAG, BQ 인텐트 → 사내 공식 데이터 소스
+- "personal": DRIVE_SEARCH, DRIVE_LIST, SHEET_READ, SHEET_WRITE, DOCS_CREATE → 개인 파일
+- "action": EMAIL_*, CALENDAR_*, TASK_* → 액션 수행
+- "general": GENERAL → 일반 대화"""
+
+_supervisor_ctx_cache: dict = {"name": None, "expires_at": 0.0}
+
+def _get_supervisor_cache() -> str | None:
+    """Supervisor 고정 분류 규칙을 Context Cache에 등록·재사용합니다.
+    Gemini Flash 최소 토큰(4,096) 미달 시 None 반환 → system_instruction 폴백."""
+    if _supervisor_ctx_cache["name"] and _time.time() < _supervisor_ctx_cache["expires_at"]:
+        return _supervisor_ctx_cache["name"]
+    try:
+        cache = ai_client.caches.create(
+            model=LITE_MODEL,
+            config=types.CreateCachedContentConfig(
+                system_instruction=_SUPERVISOR_SYSTEM_INSTRUCTION,
+                ttl="3600s",
+            ),
+        )
+        _supervisor_ctx_cache["name"] = cache.name
+        _supervisor_ctx_cache["expires_at"] = _time.time() + 3500
+        print(f"✅ [P8-B] Supervisor Context Cache 활성: {cache.name}")
+        return cache.name
+    except Exception as e:
+        print(f"⚠️ [P8-B] Context Cache 생성 불가 (5분 후 재시도): {e}")
+        _supervisor_ctx_cache["name"] = None
+        _supervisor_ctx_cache["expires_at"] = _time.time() + 300
+        return None
+
+
 # ==========================================
 # 상태 장부 및 출력 구조체 정의
 # ==========================================
@@ -461,6 +600,23 @@ def supervisor_node(state: AgentState):
                 "sources": []
             }
 
+    # [P8-A] 최근 2턴 대화 맥락 구성 — 단발성 후속 질문 라우팅 정확도 향상
+    _prior_msgs = list(state["messages"])[:-1]  # 현재 질문(마지막 HumanMessage) 제외
+    _recent_pairs: list = []
+    for _m in reversed(_prior_msgs):
+        if len(_recent_pairs) >= 4:  # 최대 2턴(사용자+챗봇 × 2) = 4개
+            break
+        _role = "사용자" if _m.type == "human" else "챗봇"
+        _recent_pairs.insert(0, f"{_role}: {_m.content[:200]}")
+    recent_history = "\n".join(_recent_pairs)
+
+    # [P8-B] Context Cache 시도 (최소 토큰 기준 미달 시 None 반환, system_instruction 폴백)
+    _cache_name = _get_supervisor_cache()
+    if recent_history:
+        _dynamic_content = f"[최근 대화 맥락]\n{recent_history}\n\n현재 질문: {user_input}"
+    else:
+        _dynamic_content = f"질문: {user_input}"
+
     prompt = f"""
     당신은 코웨이 전사 AI 챗봇의 총괄 지휘자입니다.
     사용자 질문을 분석하여 수행해야 할 모든 작업을 intents 목록에 순서대로 담아 반환하세요.
@@ -569,18 +725,32 @@ def supervisor_node(state: AgentState):
     - "action": EMAIL_*, CALENDAR_*, TASK_* → 액션 수행
     - "general": GENERAL → 일반 대화
 
-    질문: {user_input}
+    {_dynamic_content}
     """
 
     try:
-        response = ai_client.models.generate_content(
-            model=LITE_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=RouteDecision,
-            ),
-        )
+        if _cache_name:
+            # [P8-B] Context Cache 활성: 고정 규칙은 캐시, 동적 콘텐츠(맥락+질문)만 전송
+            response = ai_client.models.generate_content(
+                model=LITE_MODEL,
+                contents=_dynamic_content,
+                config=types.GenerateContentConfig(
+                    cached_content=_cache_name,
+                    response_mime_type="application/json",
+                    response_schema=RouteDecision,
+                ),
+            )
+        else:
+            # [P8-B] 폴백: system_instruction으로 규칙 분리 전달 (전체 prompt는 fallback용)
+            response = ai_client.models.generate_content(
+                model=LITE_MODEL,
+                contents=_dynamic_content,
+                config=types.GenerateContentConfig(
+                    system_instruction=_SUPERVISOR_SYSTEM_INSTRUCTION,
+                    response_mime_type="application/json",
+                    response_schema=RouteDecision,
+                ),
+            )
     except Exception as e:
         if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
             print(f"⚠️ [Supervisor] Gemini 쿼터 초과 (429) — 임시 응답 반환")
