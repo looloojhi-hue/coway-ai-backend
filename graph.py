@@ -874,9 +874,22 @@ def reasoner_node(state: AgentState):
         raw_blocks = re.split(r'\n\n---\n\n', raw_docs)
         url_order = []      # 고유 URL 순서 보존
         url_to_block = {}   # url → 대표 블록 텍스트
+        url_to_images = {}  # 🖼️ [P11] 같은 URL(예: 시트 내 여러 FAQ 행)에 흩어진 이미지를 유니온 병합
         for block in raw_blocks:
             url_m = re.search(r'^\[문서URL\]:\s*(https?://\S+)', block, re.MULTILINE)
             u = url_m.group(1).strip() if url_m else f"__nurl_{len(url_order)}"
+
+            img_m = re.search(r'^\[이미지목록\]:\s*(.+)', block, re.MULTILINE)
+            block_images = []
+            if img_m:
+                try:
+                    block_images = json.loads(img_m.group(1).strip())
+                except Exception:
+                    block_images = []
+            existing_images = url_to_images.setdefault(u, [])
+            seen_img_urls = {img.get('url') for img in existing_images}
+            existing_images.extend(img for img in block_images if img.get('url') not in seen_img_urls)
+
             if u not in url_to_block:
                 url_to_block[u] = block
                 url_order.append(u)
@@ -885,6 +898,15 @@ def reasoner_node(state: AgentState):
                 extra_m = re.search(r'\[상세 내용\]:\n(.*)', block, re.DOTALL)
                 if extra_m:
                     url_to_block[u] += "\n" + extra_m.group(1).strip()
+
+        # 대표 블록의 [이미지목록]을 해당 URL 전체 청크의 유니온 결과로 교체
+        for u in url_order:
+            merged_images_json = json.dumps(url_to_images.get(u, []), ensure_ascii=False)
+            if re.search(r'^\[이미지목록\]:.*$', url_to_block[u], re.MULTILINE):
+                url_to_block[u] = re.sub(r'^\[이미지목록\]:.*$', f'[이미지목록]: {merged_images_json}', url_to_block[u], count=1, flags=re.MULTILINE)
+            else:
+                url_to_block[u] += f"\n[이미지목록]: {merged_images_json}"
+
         docs = "\n\n---\n\n".join(url_to_block[u] for u in url_order)
         print(f"🔗 [Reasoner] 청크 병합: {len(raw_blocks)}개 → {len(url_order)}개 고유 문서")
 
