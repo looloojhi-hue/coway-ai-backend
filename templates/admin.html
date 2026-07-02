@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>코봇 관리자 대시보드</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght=300;400;500;700&display=swap');
+    body { font-family: 'Noto Sans KR', sans-serif; background: #F5F7FA; }
+    .num { font-variant-numeric: tabular-nums; }
+    .period-btn.active { background: #1A56DB !important; color: white !important; }
+    .tab-btn.active { border-color: #1A56DB !important; color: #1A56DB !important; }
+    .skeleton { background: linear-gradient(90deg, #eef1f5 25%, #e2e7ee 37%, #eef1f5 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; border-radius: 6px; }
+    @keyframes shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+    @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+  </style>
+</head>
+<body class="text-slate-800">
+
+  <div class="max-w-7xl mx-auto px-6 py-8">
+    <!-- 헤더 -->
+    <div class="flex flex-wrap items-center justify-between gap-4 mb-8">
+      <div>
+        <div class="inline-flex items-center gap-1.5 bg-[#EEF3FF] text-[#1A56DB] text-xs font-bold px-3 py-1.5 rounded-full mb-2">
+          <i data-lucide="shield-check" class="w-3.5 h-3.5"></i> 관리자 전용
+        </div>
+        <h1 class="text-2xl font-bold text-slate-900">코봇 관리자 대시보드</h1>
+        <p class="text-sm text-slate-500 mt-1">사용현황과 검색·주제분석을 한눈에 확인합니다.</p>
+      </div>
+      <a href="/" class="flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-[#1A56DB] transition-colors">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i> 챗봇으로 돌아가기
+      </a>
+    </div>
+
+    <!-- 탭 + 기간 필터 -->
+    <div class="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-slate-200">
+      <div class="flex gap-1">
+        <button data-tab="usage" class="tab-btn active px-4 py-3 text-sm font-bold border-b-2 border-transparent text-slate-500 transition-colors">사용현황</button>
+        <button data-tab="topics" class="tab-btn px-4 py-3 text-sm font-bold border-b-2 border-transparent text-slate-500 transition-colors">검색·주제분석</button>
+      </div>
+      <div class="flex gap-1 bg-slate-100 p-1 rounded-xl mb-2">
+        <button data-period="day" class="period-btn px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 transition-colors">일간</button>
+        <button data-period="week" class="period-btn active px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 transition-colors">주간</button>
+        <button data-period="month" class="period-btn px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 transition-colors">월간</button>
+        <button data-period="quarter" class="period-btn px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 transition-colors">분기</button>
+        <button data-period="year" class="period-btn px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 transition-colors">연간</button>
+      </div>
+    </div>
+
+    <!-- ===== 사용현황 탭 ===== -->
+    <div id="panel-usage">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">총 질문건수</p>
+          <p id="kpi-total" class="num text-3xl font-bold text-slate-900">–</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">활성 사용자</p>
+          <p id="kpi-users" class="num text-3xl font-bold text-slate-900">–</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">응답 성공률</p>
+          <p id="kpi-success" class="num text-3xl font-bold text-slate-900">–</p>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <p class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-2">평균 응답시간</p>
+          <p id="kpi-latency" class="num text-3xl font-bold text-slate-900">–</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 class="text-sm font-bold text-slate-700 mb-3">질문건수 추이</h3>
+          <div id="chart-timeseries" class="w-full h-[300px]"></div>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 class="text-sm font-bold text-slate-700 mb-3">디바이스 분포</h3>
+          <div id="chart-device" class="w-full h-[130px]"></div>
+          <h3 class="text-sm font-bold text-slate-700 mb-3 mt-4">브라우저 분포</h3>
+          <div id="chart-browser" class="w-full h-[130px]"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 검색·주제분석 탭 ===== -->
+    <div id="panel-topics" class="hidden">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 class="text-sm font-bold text-slate-700 mb-3">의도(기능)별 질문 분포</h3>
+          <div id="chart-intent" class="w-full h-[280px]"></div>
+        </div>
+        <div class="bg-white rounded-2xl border border-slate-200 p-5">
+          <h3 class="text-sm font-bold text-slate-700 mb-3">미응답 질의의 추정 담당부서</h3>
+          <div id="chart-dept" class="w-full h-[280px]"></div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl border border-slate-200 p-5">
+        <h3 class="text-sm font-bold text-slate-700 mb-1">지식공백 리스트 — 답변에 실패한 질문</h3>
+        <p class="text-xs text-slate-400 mb-4">동일 질문이 반복될수록 지식베이스 보강 우선순위가 높습니다.</p>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-xs font-bold text-slate-400 uppercase border-b border-slate-100">
+                <th class="py-2 pr-4">질문</th>
+                <th class="py-2 pr-4 num">반복 횟수</th>
+                <th class="py-2">마지막 질문 시각</th>
+              </tr>
+            </thead>
+            <tbody id="gap-table-body"></tbody>
+          </table>
+          <p id="gap-empty" class="hidden text-sm text-slate-400 py-6 text-center">이 기간에는 답변 실패 질문이 없습니다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    lucide.createIcons();
+
+    let currentPeriod = 'week';
+    let currentTab = 'usage';
+    const charts = {};
+
+    function getChart(id) {
+      if (!charts[id]) charts[id] = echarts.init(document.getElementById(id));
+      return charts[id];
+    }
+
+    function fmtNum(n) { return (n ?? 0).toLocaleString('ko-KR'); }
+    function fmtMs(ms) {
+      if (ms === null || ms === undefined) return '–';
+      return ms >= 1000 ? (ms / 1000).toFixed(1) + '초' : ms + 'ms';
+    }
+    function fmtBucketLabel(iso, period) {
+      const d = new Date(iso);
+      if (period === 'day') return d.getHours().toString().padStart(2, '0') + '시';
+      if (period === 'year') return (d.getMonth() + 1) + '월';
+      return (d.getMonth() + 1) + '/' + d.getDate();
+    }
+
+    const PIE_COLORS = ['#1A56DB', '#60A5FA', '#93C5FD', '#C7D7FC', '#E4EDE9'];
+
+    async function loadUsage(period) {
+      const res = await fetch(`/api/admin/usage?period=${period}`);
+      if (!res.ok) throw new Error('사용현황 조회 실패');
+      const data = await res.json();
+
+      document.getElementById('kpi-total').textContent = fmtNum(data.totalQueries);
+      document.getElementById('kpi-users').textContent = fmtNum(data.activeUsers);
+      document.getElementById('kpi-success').textContent = data.successRate + '%';
+      document.getElementById('kpi-latency').textContent = fmtMs(data.avgLatencyMs);
+
+      getChart('chart-timeseries').setOption({
+        grid: { left: 40, right: 16, top: 20, bottom: 30 },
+        xAxis: { type: 'category', data: data.timeseries.map(t => fmtBucketLabel(t.bucket, period)), axisLine: { lineStyle: { color: '#CBD5E1' } } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { color: '#F1F5F9' } } },
+        tooltip: { trigger: 'axis' },
+        series: [{
+          data: data.timeseries.map(t => t.count),
+          type: 'line', smooth: true, symbol: 'circle', symbolSize: 6,
+          lineStyle: { color: '#1A56DB', width: 2.5 },
+          itemStyle: { color: '#1A56DB' },
+          areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(26,86,219,0.18)' }, { offset: 1, color: 'rgba(26,86,219,0)' }] } },
+        }],
+      });
+
+      getChart('chart-device').setOption({
+        tooltip: { trigger: 'item' },
+        series: [{ type: 'pie', radius: ['55%', '80%'], label: { show: false },
+          data: data.deviceBreakdown.map((d, i) => ({ name: d.label, value: d.count, itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] } })) }],
+      });
+      getChart('chart-browser').setOption({
+        tooltip: { trigger: 'item' },
+        series: [{ type: 'pie', radius: ['55%', '80%'], label: { show: false },
+          data: data.browserBreakdown.map((d, i) => ({ name: d.label, value: d.count, itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] } })) }],
+      });
+    }
+
+    async function loadTopics(period) {
+      const res = await fetch(`/api/admin/topics?period=${period}`);
+      if (!res.ok) throw new Error('주제분석 조회 실패');
+      const data = await res.json();
+
+      getChart('chart-intent').setOption({
+        grid: { left: 100, right: 24, top: 10, bottom: 20 },
+        xAxis: { type: 'value', splitLine: { lineStyle: { color: '#F1F5F9' } } },
+        yAxis: { type: 'category', data: data.intentBreakdown.map(d => d.label).reverse(), axisLine: { show: false } },
+        tooltip: { trigger: 'axis' },
+        series: [{ type: 'bar', data: data.intentBreakdown.map(d => d.count).reverse(), itemStyle: { color: '#1A56DB', borderRadius: [0, 6, 6, 0] }, barMaxWidth: 22 }],
+      });
+
+      getChart('chart-dept').setOption({
+        tooltip: { trigger: 'item' },
+        legend: { bottom: 0, textStyle: { fontSize: 11 } },
+        series: [{ type: 'pie', radius: ['40%', '70%'], label: { fontSize: 11 },
+          data: data.deptBreakdown.map((d, i) => ({ name: d.label, value: d.count, itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] } })) }],
+      });
+
+      const tbody = document.getElementById('gap-table-body');
+      const empty = document.getElementById('gap-empty');
+      tbody.innerHTML = '';
+      if (data.knowledgeGaps.length === 0) {
+        empty.classList.remove('hidden');
+      } else {
+        empty.classList.add('hidden');
+        data.knowledgeGaps.forEach(g => {
+          const tr = document.createElement('tr');
+          tr.className = 'border-b border-slate-50';
+          tr.innerHTML = `
+            <td class="py-2.5 pr-4 text-slate-700">${g.query.replace(/</g, '&lt;')}</td>
+            <td class="py-2.5 pr-4 num font-bold text-slate-700">${g.count}</td>
+            <td class="py-2.5 text-slate-400">${new Date(g.lastAsked).toLocaleString('ko-KR')}</td>`;
+          tbody.appendChild(tr);
+        });
+      }
+    }
+
+    async function refresh() {
+      try {
+        if (currentTab === 'usage') await loadUsage(currentPeriod);
+        else await loadTopics(currentPeriod);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    document.querySelectorAll('.period-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentPeriod = btn.dataset.period;
+        refresh();
+      });
+    });
+
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentTab = btn.dataset.tab;
+        document.getElementById('panel-usage').classList.toggle('hidden', currentTab !== 'usage');
+        document.getElementById('panel-topics').classList.toggle('hidden', currentTab !== 'topics');
+        refresh();
+      });
+    });
+
+    window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+
+    refresh();
+  </script>
+</body>
+</html>

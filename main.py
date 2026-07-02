@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from google.cloud import firestore  # 🎯 파이어스토어 실시간 제어 드라이버
 
 # 💡 graph.py 하단에 정의한 명품 실시간 로깅 함수와 랭그래프 앱 객체 로드
-from graph import coway_agent_app, log_to_analytics_v2
+from graph import coway_agent_app, log_to_analytics_v2, bq_client
 
 app = FastAPI(title="Coway AI Smart Search Portal", version="2.5")
 
@@ -752,3 +752,127 @@ async def start_new_chat_session(user_email: str = Depends(get_iap_user_email)):
     new_session_id = f"session_{user_email.split('@')[0]}_{now_str}"
     print(f"🔄 [새 세션 개설] 계정: {user_email} ➔ 신규 세션 ID 발급: {new_session_id}")
     return {"success": True, "session_id": new_session_id}
+
+# ====================================================================
+# [SECTION 7] 📊 관리자 대시보드 — 사용현황 · 주제분석 (P13)
+# ====================================================================
+# period 선택자 의미: 조회 구간(range)과 트렌드 차트의 집계 단위(trunc)를 함께 결정.
+#   day(최근 24시간·시간별) / week(최근 7일·일별) / month(최근 30일·일별) /
+#   quarter(최근 90일·주별) / year(최근 365일·월별)
+ADMIN_PERIOD_CONFIG = {
+    "day":     {"range_sql": "INTERVAL 24 HOUR", "trunc": "HOUR"},
+    "week":    {"range_sql": "INTERVAL 7 DAY",   "trunc": "DAY"},
+    "month":   {"range_sql": "INTERVAL 30 DAY",  "trunc": "DAY"},
+    "quarter": {"range_sql": "INTERVAL 90 DAY",  "trunc": "WEEK"},
+    "year":    {"range_sql": "INTERVAL 365 DAY", "trunc": "MONTH"},
+}
+
+def _resolve_admin_period(period: str) -> dict:
+    cfg = ADMIN_PERIOD_CONFIG.get(period)
+    if not cfg:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 period입니다. {list(ADMIN_PERIOD_CONFIG.keys())} 중 하나를 사용하세요.")
+    return cfg
+
+@app.get("/admin", response_class=HTMLResponse)
+async def read_admin(admin_email: str = Depends(get_admin_user_email)):
+    print(f"🖥️ [관리자 페이지 접속] {admin_email}")
+    html_file_path = os.path.join("templates", "admin.html")
+    try:
+        with open(html_file_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    except Exception as e:
+        print(f"❌ [관리자 HTML 로드 실패] {e}")
+        return HTMLResponse(content=f"<h1>Internal Server Error</h1><p>{str(e)}</p>", status_code=500)
+
+@app.get("/api/admin/usage")
+async def admin_usage(period: str = "week", admin_email: str = Depends(get_admin_user_email)):
+    cfg = _resolve_admin_period(period)
+    range_sql, trunc = cfg["range_sql"], cfg["trunc"]
+
+    summary_sql = f"""
+        SELECT
+          COUNT(*) AS total_queries,
+          COUNT(DISTINCT user_email) AS active_users,
+          SAFE_DIVIDE(COUNTIF(response_status = 'SUCCESS'), COUNT(*)) * 100 AS success_rate,
+          AVG(latency_ms) AS avg_latency_ms
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql})
+    """
+    timeseries_sql = f"""
+        SELECT TIMESTAMP_TRUNC(timestamp, {trunc}) AS bucket, COUNT(*) AS count
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql})
+        GROUP BY bucket ORDER BY bucket
+    """
+    device_sql = f"""
+        SELECT COALESCE(device_type, 'Unknown') AS label, COUNT(*) AS count
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql})
+        GROUP BY label ORDER BY count DESC
+    """
+    browser_sql = f"""
+        SELECT COALESCE(browser_info, 'Unknown') AS label, COUNT(*) AS count
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql})
+        GROUP BY label ORDER BY count DESC
+    """
+    try:
+        summary_row = list(bq_client.query(summary_sql).result())[0]
+        timeseries_rows = list(bq_client.query(timeseries_sql).result())
+        device_rows = list(bq_client.query(device_sql).result())
+        browser_rows = list(bq_client.query(browser_sql).result())
+    except Exception as e:
+        print(f"⚠️ [관리자 사용현황 조회 실패] {e}")
+        raise HTTPException(status_code=500, detail="사용현황 데이터를 불러오지 못했습니다.")
+
+    return {
+        "period": period,
+        "totalQueries": summary_row.total_queries or 0,
+        "activeUsers": summary_row.active_users or 0,
+        "successRate": round(summary_row.success_rate, 1) if summary_row.success_rate is not None else 0,
+        "avgLatencyMs": round(summary_row.avg_latency_ms) if summary_row.avg_latency_ms is not None else None,
+        "timeseries": [{"bucket": r.bucket.isoformat(), "count": r.count} for r in timeseries_rows],
+        "deviceBreakdown": [{"label": r.label, "count": r.count} for r in device_rows],
+        "browserBreakdown": [{"label": r.label, "count": r.count} for r in browser_rows],
+    }
+
+@app.get("/api/admin/topics")
+async def admin_topics(period: str = "week", admin_email: str = Depends(get_admin_user_email)):
+    cfg = _resolve_admin_period(period)
+    range_sql = cfg["range_sql"]
+
+    intent_sql = f"""
+        SELECT COALESCE(intent, '미계측(구버전)') AS label, COUNT(*) AS count
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql})
+        GROUP BY label ORDER BY count DESC
+    """
+    dept_sql = f"""
+        SELECT COALESCE(assigned_dept, '분류 불가') AS label, COUNT(*) AS count
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql}) AND response_status = 'FAIL'
+        GROUP BY label ORDER BY count DESC
+    """
+    gaps_sql = f"""
+        SELECT user_query AS query, COUNT(*) AS count, MAX(timestamp) AS last_asked
+        FROM `chatbot_analytics.query_analytics_v2`
+        WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), {range_sql}) AND response_status = 'FAIL'
+        GROUP BY user_query
+        ORDER BY count DESC, last_asked DESC
+        LIMIT 50
+    """
+    try:
+        intent_rows = list(bq_client.query(intent_sql).result())
+        dept_rows = list(bq_client.query(dept_sql).result())
+        gap_rows = list(bq_client.query(gaps_sql).result())
+    except Exception as e:
+        print(f"⚠️ [관리자 주제분석 조회 실패] {e}")
+        raise HTTPException(status_code=500, detail="주제분석 데이터를 불러오지 못했습니다.")
+
+    return {
+        "period": period,
+        "intentBreakdown": [{"label": r.label, "count": r.count} for r in intent_rows],
+        "deptBreakdown": [{"label": r.label, "count": r.count} for r in dept_rows],
+        "knowledgeGaps": [{"query": r.query, "count": r.count, "lastAsked": r.last_asked.isoformat()} for r in gap_rows],
+    }

@@ -167,16 +167,18 @@
 
 ### P13. 사용현황 · 주제분석 MVP
 **파일**: `main.py`(신규 `/admin` 라우트 및 API), `templates/admin.html`(신규)  
-**상태**: `[ ]` — P12 선행 필요
+**상태**: `[x]`
 
 **배경**: 계획 1번(접속자수·질문건수·응답성공률 + 기간 필터)과 2번(검색 키워드/기능 사용 현황)에 해당. P12에서 살려낸 `intent`/`latency_ms`를 바로 사용.
 
 | # | 항목 | 설명 | 상태 |
 |---|------|------|------|
-| 13-A | `/admin` 라우트 + 인증 | `get_admin_user_email` 의존성으로 보호되는 신규 라우트, `templates/admin.html` 서빙 | `[ ]` |
-| 13-B | 사용현황 집계 API | `/api/admin/usage?period=day\|week\|month\|quarter\|year` — DAU/WAU/MAU, 질문건수, 성공률, device/browser 분포 | `[ ]` |
-| 13-C | 주제분석 집계 API | `/api/admin/topics` — intent별 건수, `response_status='FAIL'` 질의 목록(지식공백 리스트) | `[ ]` |
-| 13-D | 대시보드 프론트엔드 | 기존 `index.html`의 ECharts 재사용, 사용현황/주제분석 2탭 구성 | `[ ]` |
+| 13-A | `/admin` 라우트 + 인증 | `get_admin_user_email` 의존성으로 보호되는 신규 라우트, `templates/admin.html` 서빙 | `[x]` |
+| 13-B | 사용현황 집계 API | `/api/admin/usage?period=day\|week\|month\|quarter\|year` — 총 질문건수/활성사용자/성공률/평균응답시간 KPI + 추이 차트 + device/browser 분포. period는 조회기간·집계단위를 동시 결정(일간=최근24시간·시간별 ~ 연간=최근365일·월별) | `[x]` |
+| 13-C | 주제분석 집계 API | `/api/admin/topics` — intent별 건수, 실패(FAIL) 질의의 추정부서 분포, 지식공백 리스트(반복 실패 질문 Top 50) | `[x]` |
+| 13-D | 대시보드 프론트엔드 | `templates/admin.html` 신규 — index.html과 동일한 Tailwind/ECharts/Noto Sans KR 스타일 재사용, 사용현황/주제분석 2탭 + 기간 필터 5종 | `[x]` |
+
+**테스트**: 로컬 uvicorn 기동 후 curl로 직접 확인 — 관리자 계정(`looloojhi@coway.com`) `/admin` 200, 비관리자 계정(IAP 헤더 위조) `/admin` 403, `/api/admin/usage`·`/api/admin/topics` 실제 BQ 데이터 정상 반환, 잘못된 `period` 값 400 확인.
 
 ---
 
@@ -234,3 +236,4 @@
 | 2026-07-02 | Phase 4 | P11 후속 수정: 시트에 수기 입력된 드라이브 "보기" 링크가 `<img>`로 렌더링 안 되던 버그 수정(`main.py`에서 lh3 썸네일 URL로 정규화, 해상도 1600px 상향). 이미지를 소스카드에서 분리해 답변 하단·소스카드 상단에 챗방 폭 전체 크기로 세로 스택 노출하도록 UI 재구성 |
 | 2026-07-02 | Phase 5 | 관리자 대시보드 Phase 5 등록(P12~P16): 전사 베타 오픈에 따른 관리자 페이지 신설. 코드베이스 계측 감사 + Zendesk/Intercom/ServiceNow/Glean 벤치마킹 기반 기획. P12(계측 정비)부터 착수 예정 |
 | 2026-07-02 | Phase 5 | P12 완료: BQ `query_analytics_v2`에 `intent`/`latency_ms`/`model_armor_blocked`/`bq_retry_count` 컬럼 추가 및 실제 저장 연동(기존엔 intent 파라미터를 받아놓고도 저장 안 하던 결함 수정), 응답 지연시간 계측, Model Armor 차단 플래그 state 전파, 관리자 최소 인증(`ADMIN_EMAILS` allowlist, looloojhi@coway.com 등록) 추가. 스모크 테스트로 BQ 적재 확인 |
+| 2026-07-02 | Phase 5 | P13 완료: `/admin` 페이지 + `/api/admin/usage`, `/api/admin/topics` 신설. 사용현황(추이·KPI·device/browser) + 검색·주제분석(intent 분포·지식공백 리스트) 대시보드. 로컬 curl 테스트로 인증(200/403)·API 응답·400 검증 완료 |
