@@ -1173,25 +1173,39 @@
         }
       } catch (e) { console.error("링크 디코딩 패닉 방어:", e); }
 
+      // 🖼️ 소스카드(출처)와 참고 이미지는 별개 UX 영역: 이미지는 답변 텍스트 하단·소스카드 상단에 별도 스트립으로,
+      // 소스카드는 문서명/링크 값만 순수하게 노출 (출처 넘버링 ↔ 파일명 1:1 무결성 유지)
+      let allReferenceImages = [];
+      normalizedSources.forEach(item => {
+        (item.images || []).forEach(img => {
+          if (img.url && img.url !== '#' && !allReferenceImages.some(x => x.url === img.url)) {
+            allReferenceImages.push(img);
+          }
+        });
+      });
+
+      let referenceImagesHtml = '';
+      if (allReferenceImages.length > 0) {
+        const refThumbs = allReferenceImages.map(img => `
+          <a href="${img.url}" target="_blank" class="block">
+            <img src="${img.url}" alt="${img.title || '참고 이미지'}" loading="lazy"
+                 class="max-h-64 w-auto max-w-full object-contain rounded-xl border border-[#C7D7FC] hover:opacity-90 transition-opacity cursor-zoom-in"
+                 onerror="this.parentElement.style.display='none'">
+          </a>`).join('');
+        referenceImagesHtml = `
+          <div class="mb-4 flex flex-col gap-2">
+            <h4 class="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-widest">
+              <i data-lucide="image" class="w-3.5 h-3.5"></i> 참고 이미지
+            </h4>
+            <div class="flex flex-wrap gap-3">${refThumbs}</div>
+          </div>`;
+      }
+
       let docCardsHtml = '';
       if (normalizedSources.length > 0) {
         let cardsHtml = '';
         normalizedSources.forEach((item, index) => {
           const idx = index + 1;
-          let imagesHtml = '';
-          if (item.images && item.images.length > 0) {
-            const thumbs = item.images
-              .filter(img => img.url && img.url !== '#')
-              .map(img => `
-                <a href="${img.url}" target="_blank" class="block shrink-0">
-                  <img src="${img.url}" alt="${img.title || '참고 이미지'}" loading="lazy"
-                       class="w-20 h-20 object-cover rounded-lg border border-[#C7D7FC] hover:opacity-80 transition-opacity"
-                       onerror="this.parentElement.style.display='none'">
-                </a>`).join('');
-            if (thumbs) {
-              imagesHtml = `<div class="flex gap-2 mt-3 overflow-x-auto pb-1">${thumbs}</div>`;
-            }
-          }
           cardsHtml += `
             <div id="doc-card-${msgId}-${idx}" class="p-4 bg-[#F5F8FF] border border-[#C7D7FC] shadow-sm rounded-xl transition-all hover:border-[#1A56DB] hover:shadow-md">
               <div class="flex justify-between items-start mb-1.5">
@@ -1201,10 +1215,9 @@
                 </a>
               </div>
               <h4 class="font-bold text-sm text-slate-800 leading-snug">${item.title}</h4>
-              ${imagesHtml}
             </div>`;
         });
-        
+
         docCardsHtml = `
           <div class="mt-8 pt-6 border-t border-slate-100">
             <h4 class="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">
@@ -1299,6 +1312,7 @@
         ${htmlContent}
         ${dynamicChartCanvasHtml}
         ${dynamicButtonsHtml}
+        ${referenceImagesHtml}
         ${docCardsHtml}
         ${suggestionsHtml}
         ${actionButtonsHtml}

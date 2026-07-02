@@ -177,7 +177,7 @@ def normalize_drive_image_url(url: str) -> str:
         return url
     m = DRIVE_FILE_ID_PATTERN.search(url)
     if m:
-        return f"https://lh3.googleusercontent.com/d/{m.group(1)}=s600"
+        return f"https://lh3.googleusercontent.com/d/{m.group(1)}=s1600"
     return url
 
 def normalize_source_images(sources: list):
