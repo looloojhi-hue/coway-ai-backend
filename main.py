@@ -165,6 +165,26 @@ async def get_user_info(user_email: str = Depends(get_iap_user_email)):
 # ====================================================================
 # [SECTION 5] 🤖 [WBS 3.0] Cloud Run 중앙 오케스트레이션 대화 엔진 (정공법 완공본)
 # ====================================================================
+DRIVE_FILE_ID_PATTERN = re.compile(r'drive\.google\.com/(?:file/d/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)')
+
+def normalize_drive_image_url(url: str) -> str:
+    """
+    시트에 수기로 입력된 구글 드라이브 '보기' 링크(.../file/d/{ID}/view)는
+    <img src>로 직접 로드 시 HTML 프리뷰 페이지가 반환되어 렌더링되지 않는다.
+    실제 이미지 바이트를 서빙하는 lh3 썸네일 URL로 변환한다.
+    """
+    if not url:
+        return url
+    m = DRIVE_FILE_ID_PATTERN.search(url)
+    if m:
+        return f"https://lh3.googleusercontent.com/d/{m.group(1)}=s600"
+    return url
+
+def normalize_source_images(sources: list):
+    for sr in sources:
+        for img in (sr.get("images") or []):
+            img["url"] = normalize_drive_image_url(img.get("url", ""))
+
 def extract_structured_payload(text: str, tag: str):
     """
     🎯 [정해인 프로 사규 대괄호 특수문자 및 다중 차트 누출 방어 가드 완공]
@@ -397,6 +417,9 @@ async def chat_endpoint(payload: ChatRequest, request: Request,
                     "links": ps.get("links") or "",
                     "images": ps.get("images") or []
                 })
+
+    # 🖼️ 드라이브 '보기' 링크 → <img> 렌더링 가능한 lh3 썸네일 URL로 일괄 변환
+    normalize_source_images(source_results)
 
     # top_intent: Supervisor 최초 분류값 (Dispatcher가 "__DONE__"으로 덮어쓴 current_intent 대신 사용)
     intent = final_state.get("top_intent") or final_state.get("current_intent", "GENERAL")
