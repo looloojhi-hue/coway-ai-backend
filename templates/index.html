@@ -101,6 +101,11 @@
           <i data-lucide="plus-circle" class="w-4 h-4 text-[#1A56DB]"></i>
           <span class="hidden sm:inline">새 대화 시작</span>
         </button>
+        <!-- 관리자 전용 진입점: /api/user-info에서 isAdmin=true일 때만 노출 -->
+        <a id="admin-link-btn" href="/admin" aria-label="관리자 대시보드" title="관리자 대시보드"
+          class="hidden items-center justify-center w-9 h-9 bg-white border border-slate-200 rounded-xl text-slate-500 hover:bg-slate-50 hover:text-[#1A56DB] transition-all shadow-sm shrink-0">
+          <i data-lucide="shield" class="w-4 h-4"></i>
+        </a>
         <!-- 접속자 정보: 모바일에서 말줄임표 처리 -->
         <div id="user-profile" class="flex items-center gap-1.5 font-medium text-slate-600 bg-slate-100 px-2.5 md:px-3 py-1.5 rounded-xl min-w-0">
           <i data-lucide="user" class="w-4 h-4 text-slate-400 shrink-0"></i>
@@ -513,6 +518,10 @@
               localStorage.setItem('cobot_user_name', info.name);
               document.getElementById('main-greeting').innerHTML =
                 `안녕하세요, <span class="text-blue-600">${info.name}님</span>`;
+            }
+            if (info.isAdmin) {
+              document.getElementById('admin-link-btn').classList.remove('hidden');
+              document.getElementById('admin-link-btn').classList.add('flex');
             }
           })
           .catch(() => {

@@ -143,7 +143,7 @@ async def get_user_info(user_email: str = Depends(get_iap_user_email)):
         if cached_doc.exists:
             data = cached_doc.to_dict()
             if time.time() - data.get('cached_at', 0) < 86400:  # 24h TTL
-                return {"name": data['name'], "email": user_email}
+                return {"name": data['name'], "email": user_email, "isAdmin": user_email in ADMIN_EMAILS}
     except Exception:
         pass
 
@@ -172,7 +172,7 @@ async def get_user_info(user_email: str = Depends(get_iap_user_email)):
     except Exception:
         pass
 
-    return {"name": display_name, "email": user_email}
+    return {"name": display_name, "email": user_email, "isAdmin": user_email in ADMIN_EMAILS}
 
 # ====================================================================
 # [SECTION 5] 🤖 [WBS 3.0] Cloud Run 중앙 오케스트레이션 대화 엔진 (정공법 완공본)
