@@ -3,9 +3,10 @@ import base64
 import datetime  # 🎯 만족도 피드백 타임스탬프 고속 사출용
 import json
 import re
+import time
 import urllib.parse
 import requests as http_requests
-from fastapi import FastAPI, Request, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, Depends, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -98,7 +99,18 @@ def get_iap_user_email(request: Request) -> str:
     if iap_header:
         return iap_header.split(":")[-1].strip().lower()
     # 로컬 개발/디버깅 단계 및 파일럿용 미인증 세션 하이패스 대안 설정
-    return "looloojhi@coway.com" 
+    return "looloojhi@coway.com"
+
+# 🎯 [P12-F] 관리자 대시보드 접근 허용 이메일 — 베타 단계는 하드코딩, Phase 3(RBAC)에서 Firestore 기반으로 전환 예정
+ADMIN_EMAILS = {
+    "looloojhi@coway.com",
+}
+
+def get_admin_user_email(user_email: str = Depends(get_iap_user_email)) -> str:
+    """관리자 대시보드 전용 게이트. ADMIN_EMAILS에 없으면 403."""
+    if user_email not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+    return user_email
 
 # ====================================================================
 # [SECTION 3] 📄 최전방 웹포털 진입점 라우터 (HtmlService 완벽 대체)
@@ -303,7 +315,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request,
                         background_tasks: BackgroundTasks,
                         user_email: str = Depends(get_iap_user_email)):
     print(f"\n📥 [API 수신] 사용자 질문: {payload.current} (세션 계정: {user_email})")
-    
+    start_time = time.time()  # 🎯 [P12-C] 관리자 대시보드 지연시간 계측용
+
     session_id = payload.sessionId if payload.sessionId and payload.sessionId != "default_session" else f"session_{user_email.split('@')[0]}_default"
     
     # LangGraph Firestore 체크포인터가 이전 대화 히스토리를 자동으로 복원하므로
@@ -452,6 +465,9 @@ async def chat_endpoint(payload: ChatRequest, request: Request,
         intent=intent,
         top_dept_code=final_state.get("top_dept_code", "분류 불가"),
         user_agent=user_agent_str,
+        latency_ms=int((time.time() - start_time) * 1000),  # 🎯 [P12-C]
+        model_armor_blocked=final_state.get("model_armor_blocked", False),  # 🎯 [P12-D]
+        bq_retry_count=final_state.get("bq_retry_count", 0),  # 🎯 [P12-E]
     )
     background_tasks.add_task(
         _save_history_background,

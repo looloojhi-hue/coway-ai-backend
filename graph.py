@@ -268,6 +268,7 @@ class AgentState(TypedDict):
     email_selected_for_task: list     # Supervisor Pre-check이 선택한 Task 등록 대상 이메일
     email_task_override_due: str      # 사용자가 직접 지정한 마감일 (YYYY-MM-DD)
     email_mark_read_nums: list        # 읽음 처리할 번호 목록 (빈 리스트 = 전부)
+    model_armor_blocked: bool         # Model Armor가 프롬프트/응답을 차단했는지 (관리자 대시보드 로깅용)
 
 # Structured Output 지원을 위한 표준 Pydantic 클래스 선언
 class RouteDecision(BaseModel):
@@ -979,7 +980,7 @@ def reasoner_node(state: AgentState):
             armor_res = armor_req.json()
             if armor_res.get("sanitization_result", {}).get("is_sanitized", False):
                 print("🚨 [Model Armor 차단] 악성 입력 패턴 또는 인젝션 공격이 감지되었습니다!")
-                return {"messages": [AIMessage(content="⚠️ 안전한 사내망 환경 준수를 위해 입력하신 프롬프트가 기술보안팀 보안 필터링 시스템(Model Armor)에 의해 차단되었습니다. 사규 및 업무 가이드에 부합하는 정제된 언어로 다시 질문해 주세요.")], "sources": []}
+                return {"messages": [AIMessage(content="⚠️ 안전한 사내망 환경 준수를 위해 입력하신 프롬프트가 기술보안팀 보안 필터링 시스템(Model Armor)에 의해 차단되었습니다. 사규 및 업무 가이드에 부합하는 정제된 언어로 다시 질문해 주세요.")], "sources": [], "model_armor_blocked": True}
     except Exception as armor_err:
         print(f"⚠️ Model Armor 프롬프트 검사 오프라인 예외 스킵 (RPA 무중단 방어 가동): {armor_err}")
 
@@ -1044,7 +1045,7 @@ def reasoner_node(state: AgentState):
             armor_res = armor_req.json()
             if armor_res.get("sanitization_result", {}).get("is_sanitized", False):
                 print("🚨 [Model Armor 차단] LLM 생성 응답 중 유해 정보 부적격 조항 감지!")
-                return {"messages": [AIMessage(content="⚠️ 기술보안팀 정적 데이터 가이드라인 정책에 의거하여, 생성된 응답 내부의 부적격 단어 조항이 감지되어 답변 사출이 자율 거부되었습니다. 질문을 미세하게 수정하여 다시 시도해 주세요.")], "sources": []}
+                return {"messages": [AIMessage(content="⚠️ 기술보안팀 정적 데이터 가이드라인 정책에 의거하여, 생성된 응답 내부의 부적격 단어 조항이 감지되어 답변 사출이 자율 거부되었습니다. 질문을 미세하게 수정하여 다시 시도해 주세요.")], "sources": [], "model_armor_blocked": True}
     except Exception as armor_err:
         print(f"⚠️ Model Armor 응답문 검사 예외 제어 발동 (서비스 가용성 우선 우회): {armor_err}")
 
@@ -3852,7 +3853,8 @@ coway_agent_app = workflow.compile(checkpointer=memory)
 # =================================================================
 # 📊 비동기 텔레메트리 데이터 파이프라인 분석 로깅 시스템
 # =================================================================
-def log_to_analytics_v2(payload: dict, ai_response: str, response_status: str, intent: str, top_dept_code: str = "분류 불가", user_agent: str = "Unknown"):
+def log_to_analytics_v2(payload: dict, ai_response: str, response_status: str, intent: str, top_dept_code: str = "분류 불가", user_agent: str = "Unknown",
+                         latency_ms: int = None, model_armor_blocked: bool = False, bq_retry_count: int = 0):
     DATASET_ID = "chatbot_analytics"
     TABLE_ID = "query_analytics_v2"
     
@@ -3874,6 +3876,10 @@ def log_to_analytics_v2(payload: dict, ai_response: str, response_status: str, i
             bigquery.SchemaField("action_status", "STRING", mode="REQUIRED"),     
             bigquery.SchemaField("device_type", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("browser_info", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("intent", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("latency_ms", "INTEGER", mode="NULLABLE"),
+            bigquery.SchemaField("model_armor_blocked", "BOOLEAN", mode="NULLABLE"),
+            bigquery.SchemaField("bq_retry_count", "INTEGER", mode="NULLABLE"),
         ]
         table = bigquery.Table(table_ref, schema=schema)
         table.time_partitioning = bigquery.TimePartitioning(type_=bigquery.TimePartitioningType.DAY, field="timestamp")
@@ -3920,7 +3926,11 @@ def log_to_analytics_v2(payload: dict, ai_response: str, response_status: str, i
         "response_status": response_status,
         "action_status": action_status,
         "device_type": device,
-        "browser_info": browser
+        "browser_info": browser,
+        "intent": intent,
+        "latency_ms": latency_ms,
+        "model_armor_blocked": model_armor_blocked,
+        "bq_retry_count": bq_retry_count
     }]
     
     try:

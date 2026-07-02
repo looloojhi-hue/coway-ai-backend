@@ -142,6 +142,82 @@
 
 ---
 
+## Phase 5 — 관리자 대시보드 (Admin Dashboard)
+
+> 전사 베타 오픈에 따라 관리자 페이지 신설. 벤치마킹 근거(Zendesk/Intercom/ServiceNow/Glean 등)와 전체 정보구조·로드맵 시각 자료는 별도 기획 아티팩트 참조: `코봇 관리자 대시보드 기획안` (2026-07-02 작성, Claude Artifact).
+
+### P12. 계측 정비 (선행 필수)
+**파일**: `graph.py`, `main.py`  
+**상태**: `[x]`
+
+**배경**: 관리자 대시보드의 "검색 결과 현황(어떤 기능을 많이 쓰는지)" 탭을 만들려면 먼저 `intent`가 BQ에 저장돼야 하는데, 현재 `log_to_analytics_v2`는 `intent` 파라미터를 받으면서도 실제 INSERT에는 포함하지 않는다(`graph.py:3855` 시그니처 vs `:3913-3924` INSERT 딕셔너리). 응답 지연시간, Model Armor 차단, BQ 재시도 이벤트도 전부 `print()`로만 출력되고 영구 저장되지 않는다. 대시보드를 그리기 전에 먼저 고쳐야 할 항목들.
+
+| # | 항목 | 위치 | 설명 | 상태 |
+|---|------|------|------|------|
+| 12-A | BQ 스키마 마이그레이션 | BigQuery (1회 DDL) | `query_analytics_v2`에 `intent STRING`, `latency_ms INT64`, `model_armor_blocked BOOL`, `bq_retry_count INT64` 컬럼 추가 (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`). 기존 행은 NULL 유지, 백필 불필요 | `[x]` |
+| 12-B | `intent` 실제 저장 | `graph.py:3913-3924` | `row_to_insert`에 `"intent": intent` 한 줄 추가. 이 값 자체가 EMAIL_WRITE/CALENDAR_READ 등 13개 라우팅 카테고리이므로 별도 "Workspace 기능별 카운터"를 새로 만들 필요 없이 P13에서 `GROUP BY intent`로 바로 사용 가능 | `[x]` |
+| 12-C | 응답 지연시간 측정 | `main.py` `chat_endpoint` | `import time` 추가, 진입부 `start_time = time.time()` → 로깅 호출 시 `latency_ms` 계산·전달 | `[x]` |
+| 12-D | Model Armor 차단 플래그 전파 | `graph.py:983, 1048`(reasoner_node 조기 반환), `AgentState.model_armor_blocked` 필드 추가 | 조기 반환 dict에 `"model_armor_blocked": True` 추가 → `main.py`에서 `final_state.get("model_armor_blocked", False)` 읽어 로깅 | `[x]` |
+| 12-E | BQ 재시도 횟수 로깅 연동 | `main.py` | `AgentState`에 이미 존재하는 `bq_retry_count`를 `final_state.get("bq_retry_count", 0)`으로 읽어 로깅 호출에 전달 | `[x]` |
+| 12-F | 관리자 최소 인증 | `main.py:96-108` | `ADMIN_EMAILS = {"looloojhi@coway.com"}` 하드코딩 allowlist + `get_admin_user_email()` 의존성(기존 `get_iap_user_email` 패턴 재사용, 목록 외 이메일 403). 관리자 추가 시 코드 수정 필요 — Phase 3(P15)에서 Firestore 기반 RBAC로 전환 예정 | `[x]` |
+
+**테스트**: `graph.log_to_analytics_v2()` 직접 호출로 BQ 적재 스모크 테스트 완료(intent=RAG, latency_ms=1234, model_armor_blocked=False, bq_retry_count=0 정상 확인). 실서비스 배포 후 실제 `/api/chat` 왕복 테스트는 배포 시점에 진행.
+
+---
+
+### P13. 사용현황 · 주제분석 MVP
+**파일**: `main.py`(신규 `/admin` 라우트 및 API), `templates/admin.html`(신규)  
+**상태**: `[ ]` — P12 선행 필요
+
+**배경**: 계획 1번(접속자수·질문건수·응답성공률 + 기간 필터)과 2번(검색 키워드/기능 사용 현황)에 해당. P12에서 살려낸 `intent`/`latency_ms`를 바로 사용.
+
+| # | 항목 | 설명 | 상태 |
+|---|------|------|------|
+| 13-A | `/admin` 라우트 + 인증 | `get_admin_user_email` 의존성으로 보호되는 신규 라우트, `templates/admin.html` 서빙 | `[ ]` |
+| 13-B | 사용현황 집계 API | `/api/admin/usage?period=day\|week\|month\|quarter\|year` — DAU/WAU/MAU, 질문건수, 성공률, device/browser 분포 | `[ ]` |
+| 13-C | 주제분석 집계 API | `/api/admin/topics` — intent별 건수, `response_status='FAIL'` 질의 목록(지식공백 리스트) | `[ ]` |
+| 13-D | 대시보드 프론트엔드 | 기존 `index.html`의 ECharts 재사용, 사용현황/주제분석 2탭 구성 | `[ ]` |
+
+---
+
+### P14. 이슈 케이스관리
+**상태**: `[ ]` — P12·P13 선행 필요, 착수 전 HR 담당자와 심각도 기준·알림 채널 협의 필요
+
+**배경**: 계획 3번(고충상담·신고·괴롭힘·성희롱·퇴사·노조 모니터링). 단순 모니터링이 아니라 감지→분류→배정→SLA→감사로그로 이어지는 케이스 워크플로우로 설계(ServiceNow HR 사례 참고). 완곡한 표현은 키워드 필터가 놓칠 수 있다는 전제로 LLM 톤 분류 + 사람 샘플 리뷰를 이중 안전장치로 둠.
+
+| # | 항목 | 설명 | 상태 |
+|---|------|------|------|
+| 14-A | 이슈 케이스 테이블 신설 | BQ `chatbot_analytics.issue_cases` (severity, status, assignee, sla 마일스톤, 원문 참조) | `[ ]` |
+| 14-B | 이중 감지 파이프라인 | 키워드 1차 필터 + 기존 `ai_client` 재사용 경량 톤/의도 분류 프롬프트 | `[ ]` |
+| 14-C | 비공개 케이스뷰 + 담당자 배정 | 기본 비공개, HR 전용 접근권한 | `[ ]` |
+| 14-D | Critical 즉시 알림 | Slack Webhook 또는 Gmail API(기존 OAuth 재사용) | `[ ]` |
+| 14-E | 관리자 열람 감사로그 | BQ `chatbot_analytics.admin_audit_log` — 열람자·시각·대상 케이스 불변 기록 | `[ ]` |
+| 14-F | HR 주간 샘플 리뷰 절차 | 코드 아님 — 운영 프로세스 수립(탐지 실패 가정 안전망) | `[ ]` |
+
+---
+
+### P15. 거버넌스 확장
+**상태**: `[ ]` — Nice-to-have, 정식 오픈 시점 착수
+
+| # | 항목 | 설명 | 상태 |
+|---|------|------|------|
+| 15-A | RBAC 3계층 | super-admin / 부서 뷰어 / 읽기전용 | `[ ]` |
+| 15-B | Workspace 기능별 사용률 세분 대시보드 | intent 총량 안정화 이후 세그먼트 확장 | `[ ]` |
+| 15-C | 로그 PII 마스킹 파이프라인 | 정식 오픈 전 컴플라이언스 정비 | `[ ]` |
+
+---
+
+### P16. 지식베이스 고도화
+**상태**: `[ ]` — Nice-to-have, 지식베이스 성숙 이후
+
+| # | 항목 | 설명 | 상태 |
+|---|------|------|------|
+| 16-A | 노후 문서 플래깅 | `last_modified` 오래됨 + 인용 빈도 높음 문서 자동 플래그 | `[ ]` |
+| 16-B | 인용 정확도 스코어링 | 사용자 피드백과 소스 인용 교차 분석 | `[ ]` |
+| 16-C | CX/BSAT 정성 만족도 | 피드백 폼 안정화 이후 추가 | `[ ]` |
+
+---
+
 ## 변경 이력
 
 | 날짜 | Phase | 내용 |
@@ -155,3 +231,6 @@
 | 2026-07-01 | Phase 4 | P10 등록: Google Calendar 회의실 예약 연동 — IT팀 CSV 수령 대기 중 |
 | 2026-07-01 | Phase 4 | P11 등록: 이미지 표시 기능 — 사용자·부서 요구사항 기반, 설계 완료 |
 | 2026-07-01 | Phase 4 | P11-A/B/D/E/F 완료: BQ `images` 컬럼(JSON 배열), 시트 `이미지N` 동적 파싱, RAG→Reasoner→소스카드 이미지 파이프라인 연결, 소스카드 썸네일 렌더링. "공식이미지" 폴더 문서 스캔 제외 처리로 안내 텍스트 오염 방지. 11-C(자동 이미지 처리)는 보류 |
+| 2026-07-02 | Phase 4 | P11 후속 수정: 시트에 수기 입력된 드라이브 "보기" 링크가 `<img>`로 렌더링 안 되던 버그 수정(`main.py`에서 lh3 썸네일 URL로 정규화, 해상도 1600px 상향). 이미지를 소스카드에서 분리해 답변 하단·소스카드 상단에 챗방 폭 전체 크기로 세로 스택 노출하도록 UI 재구성 |
+| 2026-07-02 | Phase 5 | 관리자 대시보드 Phase 5 등록(P12~P16): 전사 베타 오픈에 따른 관리자 페이지 신설. 코드베이스 계측 감사 + Zendesk/Intercom/ServiceNow/Glean 벤치마킹 기반 기획. P12(계측 정비)부터 착수 예정 |
+| 2026-07-02 | Phase 5 | P12 완료: BQ `query_analytics_v2`에 `intent`/`latency_ms`/`model_armor_blocked`/`bq_retry_count` 컬럼 추가 및 실제 저장 연동(기존엔 intent 파라미터를 받아놓고도 저장 안 하던 결함 수정), 응답 지연시간 계측, Model Armor 차단 플래그 state 전파, 관리자 최소 인증(`ADMIN_EMAILS` allowlist, looloojhi@coway.com 등록) 추가. 스모크 테스트로 BQ 적재 확인 |
