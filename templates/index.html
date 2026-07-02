@@ -1186,18 +1186,19 @@
 
       let referenceImagesHtml = '';
       if (allReferenceImages.length > 0) {
+        // 챗방 폭 전체를 사용하도록 세로로 쌓아서 노출 (확대 없이도 내용 확인 가능하도록 높이는 자유롭게 늘어나게 둠)
         const refThumbs = allReferenceImages.map(img => `
-          <a href="${img.url}" target="_blank" class="block">
+          <a href="${img.url}" target="_blank" class="block w-full">
             <img src="${img.url}" alt="${img.title || '참고 이미지'}" loading="lazy"
-                 class="max-h-64 w-auto max-w-full object-contain rounded-xl border border-[#C7D7FC] hover:opacity-90 transition-opacity cursor-zoom-in"
+                 class="w-full h-auto object-contain rounded-xl border border-[#C7D7FC] hover:opacity-90 transition-opacity cursor-zoom-in"
                  onerror="this.parentElement.style.display='none'">
           </a>`).join('');
         referenceImagesHtml = `
-          <div class="mb-4 flex flex-col gap-2">
+          <div class="mb-4 flex flex-col gap-3">
             <h4 class="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-widest">
               <i data-lucide="image" class="w-3.5 h-3.5"></i> 참고 이미지
             </h4>
-            <div class="flex flex-wrap gap-3">${refThumbs}</div>
+            <div class="flex flex-col gap-3">${refThumbs}</div>
           </div>`;
       }
 
